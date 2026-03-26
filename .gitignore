@@ -1,0 +1,46 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+*.pyc
+__pycache__/
+node_modules
+dist
+dist-ssr
+*.local
+venv/
+node_modules/
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.pdf
+*.docx
+*.json
+*.njsproj
+*.sln
+*.sw?
+*.db
+__pycache__/
+
+# Project runtime/data artifacts
+mysql_data/
+qdrant_storage/
+backend/data/uploads/
+backend/data/chroma_db/
+backend/chroma_db/
+backend/chroma_db_test/
+backend/venv/
+frontend/node_modules/
+frontend/dist/
+**/__pycache__/
+*.pyc
+.env
+backend/.env
