@@ -3,6 +3,8 @@ import { FileOutput, Download, Calendar, Clock, X, Edit2, RefreshCw, Save } from
 import api from '../utils/api'
 import { showToast } from '../components/Toast'
 import Modal from '../components/Modal'
+import { jsPDF } from 'jspdf'
+import 'jspdf-autotable'
 
 const QuestionPaperGeneration = () => {
   const [subjects, setSubjects] = useState([])
@@ -147,90 +149,113 @@ const QuestionPaperGeneration = () => {
     }
   }
 
-  const downloadPaper = (paper) => {
+  const generatePDF = (papers, filename) => {
+    const doc = new jsPDF()
     const selectedSubject = subjects.find(s => s.id === parseInt(formData.subjectId))
+    const examDate = formData.examDate ? new Date(formData.examDate).toLocaleDateString() : new Date().toLocaleDateString()
 
-    let content = `${formData.title}\n`
-    content += `${formData.examType}\n`
-    content += `Subject: ${selectedSubject?.name || 'N/A'}\n`
-    if (formData.examDate) content += `Date: ${new Date(formData.examDate).toLocaleDateString()}\n`
-    content += `Duration: ${formData.examDuration} hours\n`
-    content += `${'='.repeat(80)}\n\n`
-    content += `${paper.setName}\n`
-    content += `${'='.repeat(80)}\n\n`
+    papers.forEach((paper, paperIndex) => {
+      if (paperIndex > 0) doc.addPage()
 
-    paper.parts.forEach((part) => {
-      content += `\n${part.part_name}`
-      if (part.instructions) content += ` - ${part.instructions}`
-      content += `\n${'-'.repeat(60)}\n`
+      // 🏛️ COLLEGE HEADER
+      doc.setDrawColor(0)
+      doc.setLineWidth(0.5)
+      doc.rect(10, 10, 190, 36) // Header box - Made taller for more text
 
-      part.questions.forEach((q, qIndex) => {
-        content += `\nQ${qIndex + 1}. ${q.content}`
-        if (q.marks) content += ` [${q.marks} marks]`
-        content += `\n`
+      doc.setFont('helvetica', 'bold')
+      doc.setFontSize(14)
+      doc.text('SRI SHAKTHI INSTITUTE OF ENGINEERING AND TECHNOLOGY', 105, 17, { align: 'center' })
+      
+      doc.setFont('helvetica', 'bold')
+      doc.setFontSize(11)
+      doc.text('(An Autonomous Institution)', 105, 23, { align: 'center' })
+      
+      doc.setFont('helvetica', 'normal')
+      doc.setFontSize(8.5)
+      doc.text('Affiliated to Anna University, Chennai', 105, 28, { align: 'center' })
+      doc.text('Re-Accredited by NAAC with "A", Recognized by UGC with Section 2(f) and 12(B)', 105, 32, { align: 'center' })
+      doc.text('NBA Accredited UG Programmes : Agri, BME, BT, CSE, ECE, EEE, MECH, FT and IT', 105, 36, { align: 'center' })
+      doc.text('Coimbatore - 641 062, L & T By Pass, Tamil Nadu, India', 105, 41, { align: 'center' })
+
+      // 📝 REGISTRATION & DATE
+      doc.setFontSize(10)
+      doc.text(`Date: ${examDate}`, 15, 54)
+      
+      doc.text('Reg No: ', 110, 54)
+      let boxX = 125
+      for (let i = 0; i < 12; i++) {
+        doc.rect(boxX, 50, 5.5, 5.5)
+        boxX += 5.5
+      }
+
+      // 🎓 EXAM DETAILS
+      doc.setFontSize(12)
+      doc.setFont('helvetica', 'bold')
+      doc.text(formData.examType.toUpperCase() + ' EXAMINATION', 105, 68, { align: 'center' })
+      doc.text(`Subject: ${selectedSubject?.name || 'N/A'}`, 105, 75, { align: 'center' })
+
+      doc.setFontSize(10)
+      doc.setFont('helvetica', 'normal')
+      doc.text(`Time: ${formData.examDuration} hours`, 15, 84)
+      doc.text(`Maximum: ${formData.totalMarks || 100} Marks`, 195, 84, { align: 'right' })
+
+      doc.line(10, 88, 200, 88)
+
+      // 💬 PART INSTRUCTIONS
+      doc.setFontSize(11)
+      doc.setFont('helvetica', 'bold')
+      doc.text('Answer all the Questions', 105, 95, { align: 'center' })
+      doc.line(10, 100, 200, 100)
+
+      let yPos = 110
+      let qNum = 1
+
+      paper.parts.forEach((part) => {
+        // Part Title
+        if (yPos > 260) { doc.addPage(); yPos = 20 }
+        doc.setFont('helvetica', 'bold')
+        doc.setFontSize(11)
+        doc.text(part.part_name, 15, yPos)
+        
+        doc.setFont('helvetica', 'italic')
+        doc.setFontSize(9)
+        if (part.instructions) doc.text(`(${part.instructions})`, 15, yPos + 5)
+        
+        yPos += part.instructions ? 12 : 8
+
+        part.questions.forEach((q) => {
+          if (yPos > 270) { doc.addPage(); yPos = 20 }
+          
+          doc.setFont('helvetica', 'bold')
+          doc.text(`${qNum}.`, 15, yPos)
+          
+          doc.setFont('helvetica', 'normal')
+          const questionLines = doc.splitTextToSize(q.content, 170)
+          doc.text(questionLines, 22, yPos)
+          
+          yPos += (questionLines.length * 5) + 4
+          qNum++
+        })
+        yPos += 5
       })
-
-      content += `\n`
+      
+      // Footer
+      if (yPos > 280) { doc.addPage(); yPos = 20 }
+      doc.line(10, yPos, 200, yPos)
+      doc.setFont('helvetica', 'italic')
+      doc.text('*** End of Question Paper ***', 105, yPos + 10, { align: 'center' })
     })
 
-    const blob = new Blob([content], { type: 'text/plain' })
-    const url = window.URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `${formData.title.replace(/[^a-z0-9]/gi, '_')}_${paper.setName.replace(/\s+/g, '_')}.txt`
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-    window.URL.revokeObjectURL(url)
+    doc.save(filename)
+  }
 
+  const downloadPaper = (paper) => {
+    generatePDF([paper], `${formData.title.replace(/\s+/g, '_')}_${paper.setName}.pdf`)
     showToast(`${paper.setName} downloaded successfully!`, 'success')
   }
 
   const downloadAllPapers = () => {
-    const selectedSubject = subjects.find(s => s.id === parseInt(formData.subjectId))
-
-    let content = `${formData.title}\n`
-    content += `${formData.examType}\n`
-    content += `Subject: ${selectedSubject?.name || 'N/A'}\n`
-    if (formData.examDate) content += `Date: ${new Date(formData.examDate).toLocaleDateString()}\n`
-    content += `Duration: ${formData.examDuration} hours\n`
-    content += `Total Sets: ${generatedPapers.length}\n`
-    content += `${'='.repeat(80)}\n\n`
-
-    generatedPapers.forEach((paper, paperIndex) => {
-      content += `\n${'='.repeat(80)}\n`
-      content += `${paper.setName}\n`
-      content += `${'='.repeat(80)}\n\n`
-
-      paper.parts.forEach((part) => {
-        content += `\n${part.part_name}`
-        if (part.instructions) content += ` - ${part.instructions}`
-        content += `\n${'-'.repeat(60)}\n`
-
-        part.questions.forEach((q, qIndex) => {
-          content += `\nQ${qIndex + 1}. ${q.content}`
-          if (q.marks) content += ` [${q.marks} marks]`
-          content += `\n`
-        })
-
-        content += `\n`
-      })
-
-      if (paperIndex < generatedPapers.length - 1) {
-        content += `\n\n`
-      }
-    })
-
-    const blob = new Blob([content], { type: 'text/plain' })
-    const url = window.URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `${formData.title.replace(/[^a-z0-9]/gi, '_')}_AllSets.txt`
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-    window.URL.revokeObjectURL(url)
-
+    generatePDF(generatedPapers, `${formData.title.replace(/\s+/g, '_')}_AllSets.pdf`)
     showToast(`All ${generatedPapers.length} sets downloaded successfully!`, 'success')
   }
 
@@ -351,7 +376,7 @@ const QuestionPaperGeneration = () => {
       console.log('✅ Blueprint loaded:', blueprint.name, '- Parts:', blueprint.parts?.length)
 
       console.log('🔍 Fetching questions from question bank:', formData.questionBankId)
-      const questionsRes = await api.get(`/api/questions/by-question-bank/${formData.questionBankId}`)
+      const questionsRes = await api.get(`/api/questions/bank/${formData.questionBankId}`)
       const allQuestions = questionsRes.data
       console.log('✅ Found', allQuestions.length, 'questions')
 
@@ -687,7 +712,7 @@ const QuestionPaperGeneration = () => {
         animationDelay: '0.1s',
         borderLeft: '4px solid var(--primary-400)'
       }}>
-        <h3 style={{ color: 'var(--primary-700)', marginBottom: '1.5rem' }}>Question Paper Details</h3>
+
         <div className="form-row" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '1rem' }}>
           <div className="form-group" style={{ margin: 0 }}>
             <label className="form-label">Paper Title *</label>

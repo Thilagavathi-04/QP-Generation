@@ -223,35 +223,82 @@ def generate_docx_paper(
         section.left_margin = Inches(0.75)
         section.right_margin = Inches(0.75)
     
-    # Header
-    header = doc.add_paragraph()
-    header.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run = header.add_run(title)
-    run.bold = True
-    run.font.size = Pt(16)
+    # Header - SRI SHAKTHI INSTITUTE OF ENGINEERING AND TECHNOLOGY
+    header = doc.add_table(rows=1, cols=1, width=Inches(6.5))
+    header.style = 'Table Grid'
+    cell = header.rows[0].cells[0]
     
-    # Subject and details
-    details = doc.add_paragraph()
-    details.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    details.add_run(f"{subject_name}\n").font.size = Pt(12)
-    details.add_run(f"{exam_type} Examination").font.size = Pt(11)
+    p1 = cell.paragraphs[0]
+    p1.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    r1 = p1.add_run("SRI SHAKTHI INSTITUTE OF ENGINEERING AND TECHNOLOGY")
+    r1.bold = True
+    r1.font.size = Pt(14)
     
-    # Exam info table
-    info = doc.add_paragraph()
-    info.alignment = WD_ALIGN_PARAGRAPH.LEFT
-    info.add_run(f"Date: {exam_date or 'TBD'}").font.size = Pt(10)
-    info.add_run(f"\t\t\tDuration: {duration} hours" if duration else "").font.size = Pt(10)
-    info.add_run(f"\t\t\tMax Marks: {total_marks}").font.size = Pt(10)
+    p2 = cell.add_paragraph("(An Autonomous Institution)")
+    p2.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    p2.runs[0].font.size = Pt(10)
+    p2.runs[0].bold = True
+    
+    p3 = cell.add_paragraph("Affiliated to Anna University, Chennai")
+    p4 = cell.add_paragraph("Re-Accredited by NAAC with \"A\", Recognized by UGC with Section 2(f) and 12(B)")
+    p5 = cell.add_paragraph("NBA Accredited UG Programmes : Agri, BME, BT, CSE, ECE, EEE, MECH, FT and IT")
+    p6 = cell.add_paragraph("Coimbatore - 641 062, L & T By Pass, Tamil Nadu, India")
+    for p in [p3, p4, p5, p6]:
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p.runs[0].font.size = Pt(8)
+    
+    doc.add_paragraph()
+    
+    # Meta / Info Table
+    date_str = exam_date if exam_date else datetime.now().strftime("%d.%m.%Y")
+    info_table = doc.add_table(rows=1, cols=2)
+    info_table.width = Inches(6.5)
+    
+    # Left side: Date
+    p_date = info_table.rows[0].cells[0].paragraphs[0]
+    p_date.add_run(f"Date: {date_str}").font.size = Pt(9)
+    
+    # Right side: Reg No
+    p_reg = info_table.rows[0].cells[1].paragraphs[0]
+    p_reg.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    p_reg.add_run("Reg No: ").font.size = Pt(9)
+    # Using a nested table for boxes if needed, but for docx let's keep it simple with [ ][ ][ ]
+    p_reg.add_run("[  ]" * 12).font.size = Pt(10)
+    
+    doc.add_paragraph()
+    
+    # Exam title
+    title_p = doc.add_paragraph()
+    title_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    r_title = title_p.add_run(exam_type.upper())
+    r_title.bold = True
+    r_title.font.size = Pt(12)
+    
+    # Subject info
+    sub_p = doc.add_paragraph()
+    sub_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    r_sub = sub_p.add_run(f"Subject: {subject_name}")
+    r_sub.bold = True
+    r_sub.font.size = Pt(11)
+
+    # Time and marks
+    tm_table = doc.add_table(rows=1, cols=2)
+    tm_table.width = Inches(6.5)
+    
+    p_time = tm_table.rows[0].cells[0].paragraphs[0]
+    p_time.add_run(f"Time: {duration} hours").font.size = Pt(9)
+    
+    p_marks = tm_table.rows[0].cells[1].paragraphs[0]
+    p_marks.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    p_marks.add_run(f"Maximum: {total_marks} Marks").font.size = Pt(9)
     
     doc.add_paragraph("_" * 80)
     
     # Instructions
     doc.add_paragraph()
     inst = doc.add_paragraph()
-    inst.add_run("Instructions:\n").bold = True
-    inst.add_run("1. Read all questions carefully before answering.\n")
-    inst.add_run("2. Write your answers in the provided answer booklet.\n")
-    inst.add_run("3. All questions are compulsory unless specified otherwise.\n")
+    inst.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    inst.add_run("Answer all the Questions").bold = True
     
     doc.add_paragraph("_" * 80)
     doc.add_paragraph()
@@ -269,7 +316,8 @@ def generate_docx_paper(
         
         # Part heading
         part_heading = doc.add_paragraph()
-        part_heading.add_run(f"\n{part_name}").bold = True
+        p_r = part_heading.add_run(f"\n{part_name}")
+        p_r.bold = True
         effective_count = _effective_answer_count(part, len(part_questions))
         part_heading.add_run(
             f" ({effective_count} × {part['marks_per_question']} = {effective_count * part['marks_per_question']} marks)"
@@ -287,11 +335,13 @@ def generate_docx_paper(
         # Questions
         for q in part_questions:
             q_para = doc.add_paragraph()
-            q_para.add_run(f"{question_number}. ").bold = True
+            q_para.paragraph_format.left_indent = Inches(0.4)
+            r_num = q_para.add_run(f"{question_number}. ")
+            r_num.bold = True
             q_para.add_run(q['content'])
             
             question_number += 1
-            doc.add_paragraph()
+
     
     # Footer
     doc.add_paragraph("_" * 80)
@@ -328,50 +378,159 @@ def generate_pdf_paper(
     # Container for the 'Flowable' objects
     elements = []
     
+    # Check for logo file
+    logo_path = Path(__file__).resolve().parent.parent / "data" / "static" / "logo.png"
+    has_logo = logo_path.exists()
+    
     # Styles
     styles = getSampleStyleSheet()
+    
     title_style = ParagraphStyle(
-        'CustomTitle',
+        'CollegeTitle',
         parent=styles['Heading1'],
-        fontSize=16,
-        textColor=colors.HexColor('#1a1a1a'),
-        spaceAfter=12,
-        alignment=1,  # Center
-        fontName='Helvetica-Bold'
+        fontSize=15,
+        textColor=colors.black,
+        alignment=1, # Center
+        fontName='Helvetica-Bold',
+        spaceAfter=2
     )
     
-    heading_style = ParagraphStyle(
-        'CustomHeading',
+    sub_title_style = ParagraphStyle(
+        'SubTitle',
+        parent=styles['Normal'],
+        fontSize=10,
+        alignment=1, # Center
+        fontName='Helvetica-Bold',
+        spaceAfter=1
+    )
+    
+    address_style = ParagraphStyle(
+        'Address',
+        parent=styles['Normal'],
+        fontSize=8,
+        alignment=1, # Center
+        fontName='Helvetica',
+        spaceAfter=1
+    )
+    
+    exam_title_style = ParagraphStyle(
+        'ExamTitle',
         parent=styles['Heading2'],
         fontSize=12,
-        textColor=colors.HexColor('#333333'),
-        spaceAfter=6,
-        fontName='Helvetica-Bold'
+        alignment=1, # Center
+        fontName='Helvetica-Bold',
+        spaceAfter=4,
+        leading=14
     )
     
     normal_style = styles['Normal']
+    small_style = ParagraphStyle('Small', parent=styles['Normal'], fontSize=9)
     
-    # Title
-    elements.append(Paragraph(title, title_style))
-    elements.append(Paragraph(f"{subject_name}", heading_style))
-    elements.append(Paragraph(f"{exam_type} Examination", normal_style))
-    elements.append(Spacer(1, 0.2*inch))
+    # 🏛️ HEADER TABLE (Logo + College Information + NAAC)
+    college_info = [
+        [Paragraph("SRI SHAKTHI INSTITUTE OF ENGINEERING AND TECHNOLOGY", title_style)],
+        [Paragraph("(An Autonomous Institution)", sub_title_style)],
+        [Paragraph("Affiliated to Anna University, Chennai", address_style)],
+        [Paragraph("Re-Accredited by NAAC with \"A\", Recognized by UGC with Section 2(f) and 12(B)", address_style)],
+        [Paragraph("NBA Accredited UG Programmes : Agri, BME, BT, CSE, ECE, EEE, MECH, FT and IT", address_style)],
+        [Paragraph("Coimbatore - 641 062, L & T By Pass, Tamil Nadu, India", address_style)],
+    ]
     
-    # Info line
-    info_text = f"Date: {exam_date or 'TBD'} &nbsp;&nbsp;&nbsp; Duration: {duration} hours &nbsp;&nbsp;&nbsp; Max Marks: {total_marks}"
-    elements.append(Paragraph(info_text, normal_style))
+    info_col = Table(college_info, colWidths=[5.2*inch])
+    info_col.setStyle(TableStyle([
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('LEFTPADDING', (0, 0), (-1, -1), 0),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 1),
+        ('TOPPADDING', (0, 0), (-1, -1), 1),
+    ]))
+
+    # Main header container
+    naac_path = Path(__file__).resolve().parent.parent / "data" / "static" / "naac.png"
+    has_naac = naac_path.exists()
+
+    from reportlab.platypus import Image
+    row_data = []
+    col_widths = []
+
+    if has_logo:
+        logo_img = Image(str(logo_path), 0.85*inch, 0.85*inch)
+        row_data.append(logo_img)
+        col_widths.append(0.9*inch)
+    else:
+        row_data.append("")
+        col_widths.append(0.9*inch)
+
+    row_data.append(info_col)
+    col_widths.append(5.2*inch)
+
+    if has_naac:
+        naac_img = Image(str(naac_path), 0.85*inch, 0.85*inch)
+        row_data.append(naac_img)
+        col_widths.append(0.9*inch)
+    else:
+        row_data.append("")
+        col_widths.append(0.9*inch)
+
+    header_table = Table([row_data], colWidths=col_widths)
+    header_table.setStyle(TableStyle([
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('BOX', (0, 0), (-1, -1), 1.5, colors.black),
+        ('LEFTPADDING', (0, 0), (-1, -1), 2),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 2),
+    ]))
+    
+    elements.append(header_table)
     elements.append(Spacer(1, 0.1*inch))
-    elements.append(Paragraph("_" * 100, normal_style))
-    elements.append(Spacer(1, 0.2*inch))
+    
+    # 📝 DATE AND REG NO
+    date_str = exam_date if exam_date else datetime.now().strftime("%d.%m.%Y")
+    
+    # Reg No Boxes implementation
+    reg_no_cells = [[" " for _ in range(12)]]
+    reg_table = Table(reg_no_cells, colWidths=[0.2*inch]*12, rowHeights=[0.25*inch])
+    reg_table.setStyle(TableStyle([
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+    ]))
+    
+    meta_data = [
+        [Paragraph(f"<b>Date:</b> {date_str}", small_style), 
+         Paragraph("<b>Reg No</b>", small_style), reg_table]
+    ]
+    meta_table = Table(meta_data, colWidths=[2.5*inch, 1*inch, 3*inch])
+    meta_table.setStyle(TableStyle([
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('ALIGN', (1, 0), (1, 0), 'RIGHT'),
+    ]))
+    
+    elements.append(meta_table)
+    elements.append(Spacer(1, 0.1*inch))
+    
+    # 🎓 EXAM DETAILS
+    elements.append(Paragraph(exam_type.upper() if "Examination" in exam_type else f"{exam_type.upper()} EXAMINATION", exam_title_style))
+    elements.append(Paragraph(f"Subject: {subject_name}", sub_title_style))
+    
+    # Time and Marks line
+    time_marks = [
+        [Paragraph(f"Time: {duration} hours", small_style), 
+         Paragraph(f"Maximum: {total_marks} Marks", small_style)]
+    ]
+    tm_table = Table(time_marks, colWidths=[3.5*inch, 3.5*inch])
+    tm_table.setStyle(TableStyle([
+        ('ALIGN', (1, 0), (1, 0), 'RIGHT'),
+    ]))
+    elements.append(tm_table)
+    elements.append(Spacer(1, 0.1*inch))
+    elements.append(Paragraph("_" * 105, normal_style))
+    elements.append(Spacer(1, 0.15*inch))
     
     # Instructions
-    elements.append(Paragraph("<b>Instructions:</b>", normal_style))
-    elements.append(Paragraph("1. Read all questions carefully before answering.", normal_style))
-    elements.append(Paragraph("2. Write your answers in the provided answer booklet.", normal_style))
-    elements.append(Paragraph("3. All questions are compulsory unless specified otherwise.", normal_style))
+    elements.append(Paragraph("<b>Answer all the Questions</b>", ParagraphStyle('Centered', parent=normal_style, alignment=1)))
     elements.append(Spacer(1, 0.1*inch))
-    elements.append(Paragraph("_" * 100, normal_style))
-    elements.append(Spacer(1, 0.3*inch))
     
     # Questions
     question_number = 1
@@ -390,7 +549,7 @@ def generate_pdf_paper(
             f"<b>{part_name}</b> ({effective_count} × {part['marks_per_question']} = "
             f"{effective_count * part['marks_per_question']} marks)"
         )
-        elements.append(Paragraph(part_text, heading_style))
+        elements.append(Paragraph(part_text, sub_title_style))
         
         instruction = part.get('instructions') or part.get('instruction')
         if instruction:
@@ -429,11 +588,11 @@ def generate_question_paper(
     duration: str,
     file_format: str,
     output_path: str
-) -> str:
+) -> tuple[str, Dict]:
     """
     Main function to generate question paper
     
-    Returns: path to generated file
+    Returns: (path to generated file, questions fetched)
     """
     
     # Load blueprint

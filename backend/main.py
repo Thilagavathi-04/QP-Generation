@@ -675,7 +675,9 @@ async def generate_all_questions(subject_id: int, requests: List[QuestionGenerat
         except Exception as rag_err:
             print(f"RAG Sync Error: {rag_err}")
 
-        all_results = []
+        import asyncio
+        
+        tasks_inputs = []
         
         for request in requests:
             query = f"""
@@ -701,30 +703,46 @@ async def generate_all_questions(subject_id: int, requests: List[QuestionGenerat
                 except Exception as rag_err:
                     print(f"RAG Retrieval Error: {rag_err}")
 
-                try:
-                    questions = generate_questions_with_ollama(
-                        topics=topics,
-                        count=request.count,
-                        marks=request.marks,
-                        difficulty=request.difficulty,
-                        part_name=request.part_name,
-                        context=context_str,
-                        ai_provider=request.ai_provider,
-                    )
-                    
-                    all_results.append({
-                        'part_name': request.part_name,
-                        'success': True,
-                        'count': len(questions),
-                        'questions': questions,
-                        'topics_covered': len(topics)
-                    })
-                except Exception as e:
-                    all_results.append({
-                        'part_name': request.part_name,
-                        'success': False,
-                        'error': str(e)
-                    })
+                tasks_inputs.append({
+                    'topics': topics,
+                    'request': request,
+                    'context_str': context_str
+                })
+
+        async def fetch_questions(input_data):
+            req = input_data['request']
+            try:
+                # Run the blocking AI model generation in a dedicated thread
+                questions = await asyncio.to_thread(
+                    generate_questions_with_ollama,
+                    topics=input_data['topics'],
+                    count=req.count,
+                    marks=req.marks,
+                    difficulty=req.difficulty,
+                    part_name=req.part_name,
+                    context=input_data['context_str'],
+                    ai_provider=req.ai_provider,
+                )
+                
+                return {
+                    'part_name': req.part_name,
+                    'success': True,
+                    'count': len(questions),
+                    'questions': questions,
+                    'topics_covered': len(input_data['topics'])
+                }
+            except Exception as e:
+                return {
+                    'part_name': req.part_name,
+                    'success': False,
+                    'error': str(e)
+                }
+
+        if tasks_inputs:
+            # Execute all part generations concurrently
+            all_results = await asyncio.gather(*(fetch_questions(inp) for inp in tasks_inputs))
+        else:
+            all_results = []
         
         cursor.close()
         connection.close()

@@ -403,7 +403,7 @@ const GeneratedPapers = () => {
                           title="Download Paper"
                         >
                           <Download style={{ width: '16px', height: '16px' }} />
-                          Download
+                          Question Paper
                         </button>
                         <button
                           onClick={() => handleDownloadScript(paper)}
@@ -415,7 +415,7 @@ const GeneratedPapers = () => {
                           title="Download Answer Script"
                         >
                           <ClipboardList style={{ width: '16px', height: '16px' }} />
-                          Script
+                          Answer Key
                         </button>
                         <button
                           onClick={() => handleDelete(paper.id)}

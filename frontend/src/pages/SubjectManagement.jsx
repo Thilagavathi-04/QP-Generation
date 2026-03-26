@@ -372,8 +372,8 @@ const SubjectManagement = () => {
                     borderRadius: '8px'
                   }}>
                     <FileText size={16} style={{ color: 'var(--primary-400)' }} />
-                    <span style={{ color: 'var(--primary-700)', fontWeight: '500' }}>
-                      Syllabus: {subject.syllabus_file.split('/').pop()}
+                    <span style={{ color: 'var(--primary-700)', fontWeight: '500', wordBreak: 'break-all' }}>
+                      Syllabus: {subject.syllabus_file.split(/[/\\]/).pop()}
                     </span>
                   </div>
                 )}
@@ -389,8 +389,8 @@ const SubjectManagement = () => {
                     borderRadius: '8px'
                   }}>
                     <BookOpen size={16} style={{ color: 'var(--primary-400)' }} />
-                    <span style={{ color: 'var(--primary-700)', fontWeight: '500' }}>
-                      Book: {subject.book_file.split('/').pop()}
+                    <span style={{ color: 'var(--primary-700)', fontWeight: '500', wordBreak: 'break-all' }}>
+                      Book: {subject.book_file.split(/[/\\]/).pop()}
                     </span>
                     {subject.use_book_for_generation && (
                       <span style={{

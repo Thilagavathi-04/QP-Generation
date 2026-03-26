@@ -274,24 +274,19 @@ const QuestionGeneration = () => {
       return
     }
 
-    if (saveMode === 'existing') {
-      if (!selectedBankId) {
-        showToast('Please select a question bank', 'warning')
-        return
-      }
-
-      const bank = existingBanks.find(b => b.id === parseInt(selectedBankId))
+    if (existingBanks.length > 0) {
+      const bank = existingBanks[0]
 
       setModalState({
         isOpen: true,
         type: 'confirm',
-        title: 'Add to Existing Bank',
-        message: `Are you sure you want to add ${allSelectedQuestions.length} questions to "${bank?.name}"?`,
+        title: 'Add to Question Bank',
+        message: `Are you sure you want to add ${allSelectedQuestions.length} questions to the subject's question bank ("${bank.name}")?`,
         confirmText: 'Add Questions',
         onConfirm: async () => {
           try {
             const questionsToSave = allSelectedQuestions.map(q => ({
-              question_bank_id: parseInt(selectedBankId),
+              question_bank_id: bank.id,
               subject_id: parseInt(subjectId),
               ...q
             }))
@@ -313,22 +308,15 @@ const QuestionGeneration = () => {
         isOpen: true,
         type: 'confirm',
         title: 'Create Question Bank',
-        message: `Enter a name for the question bank (${allSelectedQuestions.length} questions will be saved):`,
-        showInput: true,
-        inputPlaceholder: 'Enter question bank name...',
-        defaultValue: `Question Bank - ${new Date().toLocaleDateString()}`,
-        confirmText: 'Create',
-        onConfirm: async (bankName) => {
-          if (!bankName || !bankName.trim()) {
-            showToast('Question bank name is required', 'warning')
-            return
-          }
-
+        message: `A new question bank will be created for this subject. (${allSelectedQuestions.length} questions will be saved)`,
+        confirmText: 'Create & Save',
+        onConfirm: async () => {
           try {
+            const bankName = `${subject?.name || 'Subject'} Question Bank`
             const bankResponse = await api.post('/api/question-banks', {
-              name: bankName.trim(),
+              name: bankName,
               subject_id: parseInt(subjectId),
-              description: `Generated on ${new Date().toLocaleString()} with ${allSelectedQuestions.length} questions`
+              description: `Auto-generated bank for ${subject?.name}`
             })
 
             const questionBankId = bankResponse.data.id
@@ -344,7 +332,6 @@ const QuestionGeneration = () => {
             if (response.data.success) {
               showToast(`Question Bank "${bankName}" created successfully with ${response.data.count} questions!`, 'success')
               resetSelectedAfterSave()
-              // Refresh banks list
               fetchSubjectData()
             }
           } catch (error) {
@@ -484,88 +471,9 @@ const QuestionGeneration = () => {
             {subject.description}
           </p>
         </div>
-        <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-          <button
-            onClick={() => generateAllParts(false)}
-            disabled={isGenerating || !unitRange.from || !unitRange.to}
-            className="btn btn-primary"
-            style={{ padding: '0.4rem 0.75rem', fontSize: '0.875rem' }}
-          >
-            {isGenerating ? (
-              <div className="spinner" style={{ width: '14px', height: '14px' }}></div>
-            ) : (
-              <RefreshCw size={14} />
-            )}
-            Generate All
-          </button>
-          <button
-            onClick={() => generateAllParts(true)}
-            disabled={isGenerating || !unitRange.from || !unitRange.to}
-            className="btn btn-warning"
-            style={{ padding: '0.4rem 0.75rem', fontSize: '0.875rem' }}
-          >
-            {isGenerating ? (
-              <div className="spinner" style={{ width: '14px', height: '14px' }}></div>
-            ) : (
-              <RefreshCw size={14} />
-            )}
-            Refresh All
-          </button>
-          <button
-            onClick={saveAllPartsToQuestionBank}
-            disabled={totalSelectedQuestions === 0}
-            className="btn btn-success"
-            style={{ padding: '0.4rem 0.75rem', fontSize: '0.875rem' }}
-          >
-            <Save size={14} />
-            Save All ({totalSelectedQuestions})
-          </button>
-          <Link to="/subjects" className="btn btn-secondary" style={{ padding: '0.4rem 0.75rem', fontSize: '0.875rem' }}>Back</Link>
-        </div>
       </div>
 
-      <div className="card" style={{ borderLeft: '4px solid #28a745' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem' }}>
-          <div>
-            <h4 style={{ margin: 0, color: 'var(--success-600)' }}>Save Options</h4>
-            <p style={{ margin: '0.25rem 0 0 0', fontSize: '0.875rem', color: 'var(--secondary-500)' }}>
-              Choose whether to create a new question bank or add to an existing one.
-            </p>
-          </div>
-          <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
-            <div style={{ display: 'flex', gap: '0.5rem', backgroundColor: '#e9ecef', padding: '0.25rem', borderRadius: '4px' }}>
-              <button
-                onClick={() => setSaveMode('new')}
-                className={`btn btn-sm ${saveMode === 'new' ? 'btn-primary' : 'btn-ghost'}`}
-                style={{ padding: '0.25rem 0.75rem' }}
-              >
-                New Bank
-              </button>
-              <button
-                onClick={() => setSaveMode('existing')}
-                className={`btn btn-sm ${saveMode === 'existing' ? 'btn-primary' : 'btn-ghost'}`}
-                style={{ padding: '0.25rem 0.75rem' }}
-                disabled={existingBanks.length === 0}
-              >
-                Existing Bank
-              </button>
-            </div>
 
-            {saveMode === 'existing' && (
-              <select
-                className="form-select"
-                value={selectedBankId}
-                onChange={(e) => setSelectedBankId(e.target.value)}
-                style={{ padding: '0.4rem 0.75rem', fontSize: '0.875rem', minWidth: '200px' }}
-              >
-                {existingBanks.map(bank => (
-                  <option key={bank.id} value={bank.id}>{bank.name} ({bank.total_questions} questions)</option>
-                ))}
-              </select>
-            )}
-          </div>
-        </div>
-      </div>
 
       <div className="card">
         <h3>Question Generation Range</h3>
@@ -820,14 +728,14 @@ const QuestionGeneration = () => {
                 key={part.id}
                 onClick={() => setCurrentPart(index)}
                 className={`btn ${currentPart === index ? 'btn-primary' : 'btn-outline'}`}
-                style={{ position: 'relative' }}
+                style={{ position: 'relative', overflow: 'visible' }}
               >
                 {part.name}
-                {part.selectedQuestions.length > 0 && (
-                  <span style={{
+                <span style={{
                     position: 'absolute',
-                    top: '-5px',
-                    right: '-5px',
+                    top: '-10px',
+                    right: '-10px',
+                    zIndex: 10,
                     backgroundColor: '#28a745',
                     color: 'white',
                     borderRadius: '50%',
@@ -840,24 +748,22 @@ const QuestionGeneration = () => {
                   }}>
                     {part.selectedQuestions.length}
                   </span>
-                )}
               </button>
             ))}
           </div>
           <div style={{ display: 'flex', gap: '1rem' }}>
             <button
-              onClick={prevPart}
-              disabled={currentPart === 0}
-              className="btn btn-secondary"
+              onClick={() => generateAllParts(false)}
+              disabled={isGenerating || !unitRange.from || !unitRange.to}
+              className="btn btn-primary"
+              style={{ padding: '0.5rem 1rem', fontSize: '0.875rem' }}
             >
-              <ArrowLeft size={16} /> Previous
-            </button>
-            <button
-              onClick={nextPart}
-              disabled={currentPart === parts.length - 1}
-              className="btn btn-secondary"
-            >
-              Next <ArrowRight size={16} />
+              {isGenerating ? (
+                <div className="spinner" style={{ width: '16px', height: '16px' }}></div>
+              ) : (
+                <RefreshCw size={16} />
+              )}
+              Generate All
             </button>
           </div>
         </div>
@@ -977,7 +883,10 @@ const QuestionGeneration = () => {
                     key={question.id}
                     className={`question-item ${isSelected ? 'selected' : ''}`}
                     style={{
-                      cursor: 'pointer'
+                      cursor: 'pointer',
+                      backgroundColor: isSelected ? 'var(--success-100, #dcfce7)' : 'white',
+                      borderColor: isSelected ? 'var(--success-500, #22c55e)' : 'var(--secondary-200)',
+                      transition: 'all 0.2s ease'
                     }}
                     onClick={() => toggleQuestionSelection(currentPart, question)}
                   >
@@ -1044,12 +953,18 @@ const QuestionGeneration = () => {
         <h3>Generation Progress</h3>
         <div className="grid grid-3">
           {parts.map((part, index) => (
-            <div key={part.id} style={{
-              padding: '1rem',
-              border: '1px solid #ddd',
-              borderRadius: '8px',
-              backgroundColor: index === currentPart ? '#f8f9ff' : 'white'
-            }}>
+            <div 
+              key={part.id} 
+              onClick={() => setCurrentPart(index)}
+              style={{
+                padding: '1rem',
+                border: index === currentPart ? '2px solid var(--primary-500)' : '1px solid #ddd',
+                borderRadius: '8px',
+                backgroundColor: index === currentPart ? '#f8f9ff' : 'white',
+                cursor: 'pointer',
+                transition: 'all 0.2s ease',
+                boxShadow: index === currentPart ? '0 4px 6px -1px rgba(0, 0, 0, 0.1)' : 'none'
+              }}>
               <h4 style={{ margin: '0 0 0.5rem 0' }}>
                 {part.name}
                 <span style={{
@@ -1085,6 +1000,28 @@ const QuestionGeneration = () => {
               </div>
             </div>
           ))}
+        </div>
+        
+        <div style={{ display: 'flex', justifyContent: 'center', marginTop: '2rem', borderTop: '1px solid #eee', paddingTop: '1.5rem' }}>
+          <button
+            onClick={saveAllPartsToQuestionBank}
+            disabled={totalSelectedQuestions === 0}
+            className="btn btn-success"
+            style={{ 
+              padding: '0.75rem 2rem', 
+              fontSize: '1rem', 
+              width: '100%', 
+              maxWidth: '400px', 
+              display: 'flex', 
+              justifyContent: 'center', 
+              alignItems: 'center', 
+              gap: '0.5rem',
+              boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)'
+            }}
+          >
+            <Save size={20} />
+            Save All Generated Questions ({totalSelectedQuestions})
+          </button>
         </div>
       </div>
 

@@ -1,186 +1,99 @@
-import { useState } from "react";
-import { signInWithEmailAndPassword } from "firebase/auth";
-import { auth } from "../firebase";
-import { LogIn, Mail, Lock } from "lucide-react";
+import React, { useState, useEffect } from 'react';
+import { signInWithEmailAndPassword } from 'firebase/auth';
+import { auth, db } from '../firebase';
+import { doc, getDoc } from 'firebase/firestore';
+import { useNavigate } from 'react-router-dom';
+import { showToast } from '../components/Toast';
 
 export default function Login() {
-    const [email, setEmail] = useState("");
-    const [password, setPassword] = useState("");
-    const [loading, setLoading] = useState(false);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [loading, setLoading] = useState(false);
+  const navigate = useNavigate();
 
-    const handleLogin = async () => {
-        try {
-            setLoading(true);
-            await signInWithEmailAndPassword(auth, email, password);
-            alert("Login successful");
-        } catch (err) {
-            alert(err.message);
-        } finally {
-            setLoading(false);
-        }
-    };
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      const userCredential = await signInWithEmailAndPassword(auth, email, password);
+      showToast('Successfully logged in!', 'success');
+      
+      // Check for first login status directly
+      const docRef = doc(db, 'users', userCredential.user.uid);
+      const docSnap = await getDoc(docRef);
+      
+      if (docSnap.exists() && docSnap.data().mustChangePassword) {
+        navigate('/profile');
+        showToast('First login detected. Please update your password.', 'info');
+      } else {
+        navigate('/');
+      }
+    } catch (error) {
+      console.error(error);
+      showToast('Login Failed. Please check your credentials.', 'error');
+    }
+    setLoading(false);
+  };
 
-    return (
-        <div style={{
-            minHeight: '100vh',
+  return (
+    <div style={{ height: '100vh', display: 'flex', justifyContent: 'center', alignItems: 'center', background: 'var(--gradient-banner)' }}>
+      <div className="card fade-in" style={{ width: '410px', padding: '3rem', background: 'white', borderRadius: '24px', boxShadow: 'var(--card-shadow-hover)' }}>
+        <div style={{ textAlign: 'center', marginBottom: '2.5rem' }}>
+          <div style={{ 
+            width: '64px', 
+            height: '64px', 
+            background: 'var(--primary-600)', 
+            borderRadius: '16px', 
+            color: 'white', 
+            fontSize: '1.5rem', 
+            fontWeight: 'bold',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            background: 'linear-gradient(135deg, #ecfeff 0%, #cffafe 30%, #a5f3fc 60%, #e0f2fe 100%)',
-            padding: '2rem'
-        }}>
-            <div className="card fade-in" style={{
-                maxWidth: '450px',
-                width: '100%',
-                background: 'white',
-                padding: '2.5rem',
-                boxShadow: '0 20px 50px rgba(6, 182, 212, 0.2)',
-                border: '1px solid #cffafe'
-            }}>
-                {/* Header */}
-                <div style={{
-                    textAlign: 'center',
-                    marginBottom: '2rem'
-                }}>
-                    <div style={{
-                        width: '80px',
-                        height: '80px',
-                        margin: '0 auto 1.5rem',
-                        background: 'linear-gradient(135deg, #a5f3fc 0%, #67e8f9 100%)',
-                        borderRadius: '50%',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        boxShadow: '0 10px 25px rgba(6, 182, 212, 0.3)'
-                    }}>
-                        <LogIn size={40} style={{ color: 'white' }} />
-                    </div>
-                    <h2 style={{
-                        fontSize: '2rem',
-                        fontWeight: '700',
-                        color: '#0891b2',
-                        marginBottom: '0.5rem'
-                    }}>Welcome Back</h2>
-                    <p style={{ color: '#64748b', fontSize: '0.95rem' }}>
-                        Sign in to continue to Quest Generator
-                    </p>
-                </div>
-
-                {/* Form */}
-                <div style={{ marginBottom: '1.5rem' }}>
-                    <label style={{
-                        display: 'block',
-                        marginBottom: '0.5rem',
-                        fontSize: '0.875rem',
-                        fontWeight: '600',
-                        color: '#334155'
-                    }}>
-                        <Mail size={16} style={{ display: 'inline', marginRight: '0.5rem', verticalAlign: 'middle' }} />
-                        Email Address
-                    </label>
-                    <input
-                        type="email"
-                        placeholder="Enter your email"
-                        value={email}
-                        onChange={e => setEmail(e.target.value)}
-                        onKeyPress={e => e.key === 'Enter' && handleLogin()}
-                        style={{
-                            width: '100%',
-                            padding: '0.75rem 1rem',
-                            fontSize: '0.95rem',
-                            border: '2px solid #e0f2fe',
-                            borderRadius: '10px',
-                            transition: 'all 0.2s',
-                            outline: 'none'
-                        }}
-                        onFocus={(e) => {
-                            e.target.style.borderColor = '#67e8f9';
-                            e.target.style.boxShadow = '0 0 0 3px rgba(103, 232, 249, 0.2)';
-                        }}
-                        onBlur={(e) => {
-                            e.target.style.borderColor = '#e0f2fe';
-                            e.target.style.boxShadow = 'none';
-                        }}
-                    />
-                </div>
-
-                <div style={{ marginBottom: '2rem' }}>
-                    <label style={{
-                        display: 'block',
-                        marginBottom: '0.5rem',
-                        fontSize: '0.875rem',
-                        fontWeight: '600',
-                        color: '#334155'
-                    }}>
-                        <Lock size={16} style={{ display: 'inline', marginRight: '0.5rem', verticalAlign: 'middle' }} />
-                        Password
-                    </label>
-                    <input
-                        type="password"
-                        placeholder="Enter your password"
-                        value={password}
-                        onChange={e => setPassword(e.target.value)}
-                        onKeyPress={e => e.key === 'Enter' && handleLogin()}
-                        style={{
-                            width: '100%',
-                            padding: '0.75rem 1rem',
-                            fontSize: '0.95rem',
-                            border: '2px solid #e0f2fe',
-                            borderRadius: '10px',
-                            transition: 'all 0.2s',
-                            outline: 'none'
-                        }}
-                        onFocus={(e) => {
-                            e.target.style.borderColor = '#67e8f9';
-                            e.target.style.boxShadow = '0 0 0 3px rgba(103, 232, 249, 0.2)';
-                        }}
-                        onBlur={(e) => {
-                            e.target.style.borderColor = '#e0f2fe';
-                            e.target.style.boxShadow = 'none';
-                        }}
-                    />
-                </div>
-
-                <button
-                    onClick={handleLogin}
-                    disabled={loading || !email || !password}
-                    className="btn btn-primary"
-                    style={{
-                        width: '100%',
-                        padding: '0.875rem',
-                        fontSize: '1rem',
-                        fontWeight: '600'
-                    }}
-                >
-                    {loading ? (
-                        <>
-                            <div className="spinner" style={{ width: '20px', height: '20px', borderWidth: '3px' }}></div>
-                            Signing in...
-                        </>
-                    ) : (
-                        <>
-                            <LogIn size={20} />
-                            Sign In
-                        </>
-                    )}
-                </button>
-
-                <p style={{
-                    textAlign: 'center',
-                    marginTop: '1.5rem',
-                    color: '#64748b',
-                    fontSize: '0.875rem'
-                }}>
-                    Don't have an account?{' '}
-                    <a href="/signup" style={{
-                        color: '#06b6d4',
-                        fontWeight: '600',
-                        textDecoration: 'none'
-                    }}>
-                        Sign up
-                    </a>
-                </p>
-            </div>
+            margin: '0 auto 1.5rem',
+            boxShadow: '0 8px 16px rgba(119, 137, 107, 0.25)'
+          }}>QG</div>
+          <h2 style={{ fontSize: '1.75rem', fontWeight: '800', color: 'var(--secondary-900)', margin: 0 }}>Secure Portal</h2>
+          <p style={{ color: 'var(--secondary-500)', fontSize: '0.875rem', marginTop: '0.5rem' }}>Login to your Quest Generator account</p>
         </div>
-    );
+        
+        <form onSubmit={handleLogin}>
+          <div className="form-group" style={{ marginBottom: '1.25rem' }}>
+            <label className="form-label" style={{ fontWeight: '700', fontSize: '0.8rem', textTransform: 'uppercase', letterSpacing: '0.025em', color: 'var(--secondary-600)' }}>Email Address</label>
+            <input 
+              type="email" 
+              required
+              className="form-input" 
+              placeholder="faculty@university.edu"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              style={{ padding: '0.875rem' }}
+            />
+          </div>
+          
+          <div className="form-group" style={{ marginBottom: '2.5rem' }}>
+            <label className="form-label" style={{ fontWeight: '700', fontSize: '0.8rem', textTransform: 'uppercase', letterSpacing: '0.025em', color: 'var(--secondary-600)' }}>Password</label>
+            <input 
+              type="password" 
+              required
+              className="form-input" 
+              value={password}
+              placeholder="••••••••"
+              onChange={(e) => setPassword(e.target.value)}
+              style={{ padding: '0.875rem' }}
+            />
+          </div>
+
+          <button 
+            type="submit" 
+            disabled={loading} 
+            className="btn btn-primary" 
+            style={{ width: '100%', padding: '0.875rem', fontSize: '1rem', fontWeight: '800', justifyContent: 'center', boxShadow: '0 4px 12px rgba(119, 137, 107, 0.2)' }}
+          >
+            {loading ? 'Authenticating...' : 'Sign In'}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
 }

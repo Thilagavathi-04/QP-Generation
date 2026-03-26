@@ -273,7 +273,7 @@ const BlueprintManagement = () => {
               marginBottom: '0.5rem',
               color: 'white',
               textShadow: '0 2px 4px rgba(0,0,0,0.1)'
-            }}>Blueprint Management</h1>
+            }}>QP Blueprint</h1>
             <p style={{ opacity: 0.95, fontSize: '0.95rem' }}>
               Create and manage exam blueprints for structured question papers
             </p>
