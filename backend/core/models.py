@@ -18,6 +18,7 @@ class SubjectCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     syllabus_file: Optional[str] = None
     book_file: Optional[str] = None
+    course_outcome_file: Optional[str] = None
     use_book_for_generation: bool = False
 
 class SubjectUpdate(BaseModel):
@@ -25,6 +26,7 @@ class SubjectUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=255)
     syllabus_file: Optional[str] = None
     book_file: Optional[str] = None
+    course_outcome_file: Optional[str] = None
     use_book_for_generation: Optional[bool] = None
 
 class SubjectResponse(BaseModel):
@@ -33,6 +35,7 @@ class SubjectResponse(BaseModel):
     name: str
     syllabus_file: Optional[str] = None
     book_file: Optional[str] = None
+    course_outcome_file: Optional[str] = None
     use_book_for_generation: bool
     created_at: datetime
     updated_at: datetime

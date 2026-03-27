@@ -81,12 +81,13 @@ DATA_DIR = BASE_DIR / "data"
 UPLOAD_DIR = DATA_DIR / "uploads"
 SYLLABUS_DIR = UPLOAD_DIR / "syllabus"
 BOOK_DIR = UPLOAD_DIR / "books"
+COURSE_OUTCOMES_DIR = UPLOAD_DIR / "course_outcomes"
 PAPERS_DIR = UPLOAD_DIR / "papers"
 BLUEPRINTS_DIR = UPLOAD_DIR / "blueprints"
 TEMP_BLUEPRINTS_DIR = BLUEPRINTS_DIR / "temp"
 STUDENT_UPLOADS_DIR = UPLOAD_DIR / "student_submissions"
 
-for directory in [DATA_DIR, UPLOAD_DIR, SYLLABUS_DIR, BOOK_DIR, PAPERS_DIR, BLUEPRINTS_DIR, TEMP_BLUEPRINTS_DIR, STUDENT_UPLOADS_DIR]:
+for directory in [DATA_DIR, UPLOAD_DIR, SYLLABUS_DIR, BOOK_DIR, COURSE_OUTCOMES_DIR, PAPERS_DIR, BLUEPRINTS_DIR, TEMP_BLUEPRINTS_DIR, STUDENT_UPLOADS_DIR]:
     directory.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(title="Quest Generator API", version="1.0.0")
@@ -230,6 +231,7 @@ async def create_subject(
     name: str = Form(...),
     syllabus_file: Optional[UploadFile] = File(None),
     book_file: Optional[UploadFile] = File(None),
+    course_outcome_file: Optional[UploadFile] = File(None),
     use_book_for_generation: bool = Form(False)
 ):
     """Create a new subject with file uploads"""
@@ -269,12 +271,23 @@ async def create_subject(
                 shutil.copyfileobj(book_file.file, buffer)
             
             book_path = str(book_path)
+
+        course_outcome_path = None
+        if course_outcome_file and course_outcome_file.filename:
+            file_extension = os.path.splitext(course_outcome_file.filename)[1]
+            co_filename = f"{safe_subject_id}_co{file_extension}"
+            course_outcome_path = COURSE_OUTCOMES_DIR / co_filename
+
+            with open(course_outcome_path, "wb") as buffer:
+                shutil.copyfileobj(course_outcome_file.file, buffer)
+
+            course_outcome_path = str(course_outcome_path)
         
         query = f"""
-            INSERT INTO subjects (subject_id, name, syllabus_file, book_file, use_book_for_generation)
-            VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})
+            INSERT INTO subjects (subject_id, name, syllabus_file, book_file, course_outcome_file, use_book_for_generation)
+            VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})
         """
-        cursor.execute(query, (subject_id, name, syllabus_path, book_path, use_book_for_generation))
+        cursor.execute(query, (subject_id, name, syllabus_path, book_path, course_outcome_path, use_book_for_generation))
         connection.commit()
         
         subject_db_id = cursor.lastrowid
@@ -352,6 +365,63 @@ async def get_subject(subject_id: int):
             connection.close()
         raise HTTPException(status_code=500, detail=f"Error fetching subject: {str(e)}")
 
+
+@app.post("/api/subjects/{subject_id}/course-outcome", response_model=SubjectResponse)
+async def upload_subject_course_outcome(
+    subject_id: int,
+    course_outcome_file: UploadFile = File(...)
+):
+    """Upload or replace course outcome file for an existing subject"""
+    connection = get_db_connection()
+    if not connection:
+        raise HTTPException(status_code=500, detail="Database connection failed")
+
+    try:
+        cursor = get_cursor(connection)
+        placeholder = get_placeholder()
+
+        cursor.execute(f"SELECT id, subject_id FROM subjects WHERE id = {placeholder}", (subject_id,))
+        subject = cursor.fetchone()
+        if not subject:
+            raise HTTPException(status_code=404, detail="Subject not found")
+
+        if not course_outcome_file or not course_outcome_file.filename:
+            raise HTTPException(status_code=400, detail="Course outcome file is required")
+
+        file_extension = os.path.splitext(course_outcome_file.filename)[1].lower()
+        allowed_ext = {'.png', '.jpg', '.jpeg', '.pdf', '.doc', '.docx'}
+        if file_extension not in allowed_ext:
+            raise HTTPException(status_code=400, detail="Only image, PDF or Word files are allowed")
+
+        raw_subject_code = subject['subject_id']
+        safe_subject_id = "".join(c if c.isalnum() or c in "-_" else "_" for c in raw_subject_code)
+        co_filename = f"{safe_subject_id}_co{file_extension}"
+        co_path = COURSE_OUTCOMES_DIR / co_filename
+
+        with open(co_path, "wb") as buffer:
+            shutil.copyfileobj(course_outcome_file.file, buffer)
+
+        cursor.execute(
+            f"UPDATE subjects SET course_outcome_file = {placeholder} WHERE id = {placeholder}",
+            (str(co_path), subject_id),
+        )
+        connection.commit()
+
+        cursor.execute(f"SELECT * FROM subjects WHERE id = {placeholder}", (subject_id,))
+        updated = cursor.fetchone()
+
+        cursor.close()
+        connection.close()
+
+        return dict(updated)
+    except HTTPException:
+        raise
+    except Exception as e:
+        if connection:
+            connection.rollback()
+            connection.close()
+        raise HTTPException(status_code=500, detail=f"Error uploading course outcome: {str(e)}")
+
 @app.put("/api/subjects/{subject_id}", response_model=SubjectResponse)
 async def update_subject(subject_id: int, subject: SubjectUpdate):
     """Update a subject"""
@@ -379,6 +449,9 @@ async def update_subject(subject_id: int, subject: SubjectUpdate):
         if subject.book_file is not None:
             update_fields.append(f"book_file = {placeholder}")
             values.append(subject.book_file)
+        if subject.course_outcome_file is not None:
+            update_fields.append(f"course_outcome_file = {placeholder}")
+            values.append(subject.course_outcome_file)
         if subject.use_book_for_generation is not None:
             update_fields.append(f"use_book_for_generation = {placeholder}")
             values.append(subject.use_book_for_generation)
@@ -1803,10 +1876,16 @@ async def generate_question_paper_from_data(request: dict):
         paper_data = request.get('paper_data')  # Contains parts and questions
         
         # Validate subject
-        cursor.execute(f"SELECT id, subject_id, name FROM subjects WHERE id = {placeholder}", (subject_id,))
+        cursor.execute(f"SELECT id, subject_id, name, course_outcome_file FROM subjects WHERE id = {placeholder}", (subject_id,))
         subject = cursor.fetchone()
         if not subject:
             raise HTTPException(status_code=404, detail="Subject not found")
+
+        course_outcome_file = None
+        try:
+            course_outcome_file = subject['course_outcome_file']
+        except Exception:
+            course_outcome_file = None
         
         # Create output file
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1861,7 +1940,8 @@ async def generate_question_paper_from_data(request: dict):
                 duration=exam_duration,
                 blueprint=blueprint,
                 questions_by_part=questions_by_part,
-                output_path=str(output_path)
+                output_path=str(output_path),
+                course_outcome_file=course_outcome_file,
             )
         else:  # docx
             from services.paper_generator import generate_docx_paper
@@ -1874,7 +1954,8 @@ async def generate_question_paper_from_data(request: dict):
                 duration=exam_duration,
                 blueprint=blueprint,
                 questions_by_part=questions_by_part,
-                output_path=str(output_path)
+                output_path=str(output_path),
+                course_outcome_file=course_outcome_file,
             )
         
         # Parse exam date

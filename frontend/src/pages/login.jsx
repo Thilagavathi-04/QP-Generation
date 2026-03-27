@@ -1,9 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { signInWithEmailAndPassword } from 'firebase/auth';
 import { auth, db } from '../firebase';
 import { doc, getDoc } from 'firebase/firestore';
 import { useNavigate } from 'react-router-dom';
-import { showToast } from '../components/Toast';
+import { showToast } from '../utils/toast';
 
 export default function Login() {
   const [email, setEmail] = useState('');
@@ -11,11 +11,36 @@ export default function Login() {
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
 
+  const getAuthErrorMessage = (code) => {
+    switch (code) {
+      case 'auth/invalid-credential':
+      case 'auth/wrong-password':
+      case 'auth/user-not-found':
+        return 'Invalid email or password.'
+      case 'auth/invalid-email':
+        return 'Please enter a valid email address.'
+      case 'auth/too-many-requests':
+        return 'Too many failed attempts. Please try again later.'
+      case 'auth/user-disabled':
+        return 'This account has been disabled.'
+      default:
+        return 'Login failed. Please try again.'
+    }
+  }
+
   const handleLogin = async (e) => {
     e.preventDefault();
     setLoading(true);
     try {
-      const userCredential = await signInWithEmailAndPassword(auth, email, password);
+      const normalizedEmail = email.trim().toLowerCase();
+      const normalizedPassword = password.trim();
+
+      if (!normalizedEmail || !normalizedPassword) {
+        showToast('Email and password are required.', 'warning');
+        return;
+      }
+
+      const userCredential = await signInWithEmailAndPassword(auth, normalizedEmail, normalizedPassword);
       showToast('Successfully logged in!', 'success');
       
       // Check for first login status directly
@@ -30,9 +55,10 @@ export default function Login() {
       }
     } catch (error) {
       console.error(error);
-      showToast('Login Failed. Please check your credentials.', 'error');
+      showToast(getAuthErrorMessage(error.code), 'error');
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   return (

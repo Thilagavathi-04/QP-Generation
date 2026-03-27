@@ -2,19 +2,21 @@ import React, { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { Plus, Edit, Trash2, BookOpen, Database, FileText, Upload, Loader2 } from 'lucide-react'
 import api from '../utils/api'
-import { showToast } from '../components/Toast'
+import { showToast } from '../utils/toast'
 import Modal from '../components/Modal'
 
 const SubjectManagement = () => {
   const [subjects, setSubjects] = useState([])
   const [loading, setLoading] = useState(true)
   const [showCreateForm, setShowCreateForm] = useState(false)
+  const [uploadingCourseOutcomeFor, setUploadingCourseOutcomeFor] = useState(null)
   const [modalState, setModalState] = useState({ isOpen: false, type: '', data: null })
   const [formData, setFormData] = useState({
     subjectId: '',
     name: '',
     syllabusFile: null,
     bookFile: null,
+    courseOutcomeFile: null,
     useBookForGeneration: false
   })
 
@@ -67,6 +69,10 @@ const SubjectManagement = () => {
         formDataToSend.append('book_file', formData.bookFile)
       }
 
+      if (formData.courseOutcomeFile) {
+        formDataToSend.append('course_outcome_file', formData.courseOutcomeFile)
+      }
+
       await api.post('/api/subjects', formDataToSend, {
         headers: {
           'Content-Type': 'multipart/form-data'
@@ -79,6 +85,7 @@ const SubjectManagement = () => {
         name: '',
         syllabusFile: null,
         bookFile: null,
+        courseOutcomeFile: null,
         useBookForGeneration: false
       })
       setShowCreateForm(false)
@@ -110,6 +117,35 @@ const SubjectManagement = () => {
         }
       }
     })
+  }
+
+  const handleCourseOutcomeUpdate = async (subjectId, file) => {
+    if (!file) return
+
+    const okImage = file.type.startsWith('image/')
+    const okDoc = file.type === 'application/pdf' || file.type.includes('word')
+    if (!okImage && !okDoc) {
+      showToast('Please upload image, PDF, or Word document', 'warning')
+      return
+    }
+
+    try {
+      setUploadingCourseOutcomeFor(subjectId)
+      const formDataToSend = new FormData()
+      formDataToSend.append('course_outcome_file', file)
+
+      await api.post(`/api/subjects/${subjectId}/course-outcome`, formDataToSend, {
+        headers: { 'Content-Type': 'multipart/form-data' }
+      })
+
+      showToast('Course outcome updated successfully!', 'success')
+      await fetchSubjects()
+    } catch (error) {
+      console.error('Error updating course outcome:', error)
+      showToast(error.response?.data?.detail || 'Failed to update course outcome', 'error')
+    } finally {
+      setUploadingCourseOutcomeFor(null)
+    }
   }
 
   return (
@@ -233,6 +269,34 @@ const SubjectManagement = () => {
                     <Upload size={24} />
                     <div className="file-upload-text">
                       {formData.bookFile ? formData.bookFile.name : 'Click to upload book (optional)'}
+                    </div>
+                  </label>
+                </div>
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Course Outcome Sheet (Image/PDF/Word)</label>
+                <div className="file-upload">
+                  <input
+                    type="file"
+                    accept=".png,.jpg,.jpeg,.pdf,.doc,.docx"
+                    onChange={(e) => {
+                      const file = e.target.files[0]
+                      if (!file) return
+                      const okImage = file.type.startsWith('image/')
+                      const okDoc = file.type === 'application/pdf' || file.type.includes('word')
+                      if (okImage || okDoc) {
+                        setFormData(prev => ({ ...prev, courseOutcomeFile: file }))
+                      } else {
+                        showToast('Please upload image, PDF, or Word document', 'warning')
+                      }
+                    }}
+                    id="course-outcome-file"
+                  />
+                  <label htmlFor="course-outcome-file">
+                    <Upload size={24} />
+                    <div className="file-upload-text">
+                      {formData.courseOutcomeFile ? formData.courseOutcomeFile.name : 'Click to upload course outcomes (optional)'}
                     </div>
                   </label>
                 </div>
@@ -407,6 +471,23 @@ const SubjectManagement = () => {
                   </div>
                 )}
 
+                {subject.course_outcome_file && (
+                  <div style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.5rem',
+                    marginBottom: '0.5rem',
+                    padding: '0.5rem',
+                    background: 'var(--rose-50)',
+                    borderRadius: '8px'
+                  }}>
+                    <FileText size={16} style={{ color: 'var(--primary-400)' }} />
+                    <span style={{ color: 'var(--primary-700)', fontWeight: '500' }}>
+                      CO: {subject.course_outcome_file.split('/').pop()}
+                    </span>
+                  </div>
+                )}
+
                 <div style={{
                   marginTop: '0.75rem',
                   paddingTop: '0.75rem',
@@ -465,6 +546,32 @@ const SubjectManagement = () => {
                 >
                   <Trash2 size={16} />
                 </button>
+
+                <input
+                  id={`co-upload-${subject.id}`}
+                  type="file"
+                  accept=".png,.jpg,.jpeg,.pdf,.doc,.docx"
+                  style={{ display: 'none' }}
+                  onChange={(e) => {
+                    const file = e.target.files?.[0]
+                    handleCourseOutcomeUpdate(subject.id, file)
+                    e.target.value = ''
+                  }}
+                />
+                <label
+                  htmlFor={`co-upload-${subject.id}`}
+                  className="btn"
+                  style={{
+                    fontSize: '0.875rem',
+                    padding: '0.5rem 0.75rem',
+                    background: uploadingCourseOutcomeFor === subject.id ? '#94a3b8' : 'var(--gradient-mint-fresh)',
+                    color: 'white',
+                    cursor: uploadingCourseOutcomeFor === subject.id ? 'not-allowed' : 'pointer',
+                    opacity: uploadingCourseOutcomeFor === subject.id ? 0.8 : 1,
+                  }}
+                >
+                  {uploadingCourseOutcomeFor === subject.id ? <Loader2 size={16} /> : <Upload size={16} />}
+                </label>
               </div>
             </div>
           ))}

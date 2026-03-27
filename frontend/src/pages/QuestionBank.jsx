@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { Search, Filter, Download, Trash2, Eye, EyeOff, Database, ArrowLeft, BookOpen } from 'lucide-react'
 import api from '../utils/api'
-import { showToast } from '../components/Toast'
+import { showToast } from '../utils/toast'
 import Modal from '../components/Modal'
 
 const QuestionBank = () => {
@@ -32,6 +32,7 @@ const QuestionBank = () => {
     } else {
       fetchAllBanks()
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [subjectId])
 
   const fetchSubjectData = async () => {

@@ -1,15 +1,12 @@
 import React, { useState, useEffect } from 'react'
 import { FileOutput, Download, Calendar, Clock, X, Edit2, RefreshCw, Save } from 'lucide-react'
 import api from '../utils/api'
-import { showToast } from '../components/Toast'
+import { showToast } from '../utils/toast'
 import Modal from '../components/Modal'
-import { jsPDF } from 'jspdf'
-import 'jspdf-autotable'
 
 const QuestionPaperGeneration = () => {
   const [subjects, setSubjects] = useState([])
   const [blueprints, setBlueprints] = useState([])
-  const [units, setUnits] = useState([])
   const [questionBanks, setQuestionBanks] = useState([])
   const [loading, setLoading] = useState(true)
   const [generating, setGenerating] = useState(false)
@@ -66,7 +63,6 @@ const QuestionPaperGeneration = () => {
   const fetchUnits = async (subjectId) => {
     try {
       const response = await api.get(`/api/subjects/${subjectId}/units`)
-      setUnits(response.data.units || response.data)
       if (response.data.units?.length > 0 || response.data.length > 0) {
         const unitsArray = response.data.units || response.data
         setFormData(prev => ({
@@ -149,7 +145,12 @@ const QuestionPaperGeneration = () => {
     }
   }
 
-  const generatePDF = (papers, filename) => {
+  const generatePDF = async (papers, filename) => {
+    const [{ jsPDF }] = await Promise.all([
+      import('jspdf'),
+      import('jspdf-autotable')
+    ])
+
     const doc = new jsPDF()
     const selectedSubject = subjects.find(s => s.id === parseInt(formData.subjectId))
     const examDate = formData.examDate ? new Date(formData.examDate).toLocaleDateString() : new Date().toLocaleDateString()
@@ -249,21 +250,30 @@ const QuestionPaperGeneration = () => {
     doc.save(filename)
   }
 
-  const downloadPaper = (paper) => {
-    generatePDF([paper], `${formData.title.replace(/\s+/g, '_')}_${paper.setName}.pdf`)
-    showToast(`${paper.setName} downloaded successfully!`, 'success')
+  const downloadPaper = async (paper) => {
+    try {
+      await generatePDF([paper], `${formData.title.replace(/\s+/g, '_')}_${paper.setName}.pdf`)
+      showToast(`${paper.setName} downloaded successfully!`, 'success')
+    } catch (error) {
+      console.error('Error downloading paper:', error)
+      showToast('Failed to download paper', 'error')
+    }
   }
 
-  const downloadAllPapers = () => {
-    generatePDF(generatedPapers, `${formData.title.replace(/\s+/g, '_')}_AllSets.pdf`)
-    showToast(`All ${generatedPapers.length} sets downloaded successfully!`, 'success')
+  const downloadAllPapers = async () => {
+    try {
+      await generatePDF(generatedPapers, `${formData.title.replace(/\s+/g, '_')}_AllSets.pdf`)
+      showToast(`All ${generatedPapers.length} sets downloaded successfully!`, 'success')
+    } catch (error) {
+      console.error('Error downloading all papers:', error)
+      showToast('Failed to download papers', 'error')
+    }
   }
 
   // ✅ Save papers to backend as PDF/DOCX
   const saveAllPapers = async () => {
     try {
       setSaving(true)
-      const selectedSubject = subjects.find(s => s.id === parseInt(formData.subjectId))
       const selectedBlueprint = blueprints.find(b => b.id === parseInt(formData.blueprintId))
 
       const totalMarks = selectedBlueprint?.parts?.reduce((sum, part) =>

@@ -16,15 +16,10 @@ const Dashboard = () => {
   const [recentActivity, setRecentActivity] = useState([])
   const [loading, setLoading] = useState(true)
 
-  useEffect(() => {
-    fetchDashboardData()
-  }, [])
-
-  const fetchDashboardData = async () => {
+  async function fetchDashboardData() {
     try {
       setLoading(true)
 
-      // Fetch stats
       const statsRes = await axios.get(`${API_URL}/api/dashboard/stats`)
       setStats({
         totalSubjects: statsRes.data.subjects,
@@ -33,7 +28,6 @@ const Dashboard = () => {
         generatedPapers: statsRes.data.papers
       })
 
-      // Fetch recent activity
       const activityRes = await axios.get(`${API_URL}/api/dashboard/recent-activity`)
       setRecentActivity(activityRes.data)
 
@@ -43,6 +37,13 @@ const Dashboard = () => {
       setLoading(false)
     }
   }
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      fetchDashboardData()
+    }, 0)
+    return () => clearTimeout(timer)
+  }, [])
 
   const formatTimeAgo = (timestamp) => {
     const now = new Date()

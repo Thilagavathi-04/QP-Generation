@@ -14,7 +14,7 @@ import {
     UserCircle,
     Settings
 } from 'lucide-react'
-import { useAuth } from '../context/AuthContext'
+import { useAuth } from '../context/useAuth'
 
 const Sidebar = () => {
     const location = useLocation()
@@ -90,7 +90,18 @@ const Sidebar = () => {
         <aside className="sidebar">
             <div className="sidebar-header">
                 <Link to="/" className="sidebar-logo">
-                    <div className="logo-icon">QG</div>
+                    <img
+                        src="/logo.png"
+                        alt="AI Avalon Logo"
+                        style={{
+                            height: '32px',
+                            width: '32px',
+                            borderRadius: '8px',
+                            objectFit: 'contain',
+                            marginRight: '0.75rem',
+                            backgroundColor: 'transparent'
+                        }}
+                    />
                     <span>Quest Generator</span>
                 </Link>
             </div>
@@ -99,17 +110,18 @@ const Sidebar = () => {
                 {navGroups.map((group, groupIdx) => (
                     <div key={groupIdx} className="sidebar-group">
                         <h3 className="sidebar-group-title">{group.title}</h3>
-                        {group.items.map(({ path, label, icon: Icon }) => (
-                            <Link
-                                key={path}
-                                to={path}
-                                className={`sidebar-link ${isActive(path) ? 'active' : ''}`}
+                        {group.items.map((item) => {
+                            const NavIcon = item.icon
+                            return <Link
+                                key={item.path}
+                                to={item.path}
+                                className={`sidebar-link ${isActive(item.path) ? 'active' : ''}`}
                             >
-                                <Icon size={18} />
-                                <span>{label}</span>
-                                {isActive(path) && <ChevronRight size={14} className="active-indicator" />}
+                                <NavIcon size={18} />
+                                <span>{item.label}</span>
+                                {isActive(item.path) && <ChevronRight size={14} className="active-indicator" />}
                             </Link>
-                        ))}
+                        })}
                     </div>
                 ))}
             </div>

@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { motion } from 'framer-motion';
 import { CheckCircle, XCircle, Trash2, Shield, Search } from 'lucide-react';
 import '../styles/Admin.css'; // We will create this next
 
@@ -103,11 +102,8 @@ const AdminDashboard = () => {
                         </thead>
                         <tbody>
                             {filteredUsers.map(user => (
-                                <motion.tr
+                                <tr
                                     key={user.id}
-                                    initial={{ opacity: 0 }}
-                                    animate={{ opacity: 1 }}
-                                    layout
                                 >
                                     <td className="user-cell">
                                         <div className="user-avatar">{user.name.charAt(0)}</div>
@@ -145,7 +141,7 @@ const AdminDashboard = () => {
                                         )}
                                     </td>
 
-                                </motion.tr>
+                                </tr>
                             ))}
                             {filteredUsers.length === 0 && (
                                 <tr>

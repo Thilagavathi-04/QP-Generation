@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { User, Award, BookOpen, ChevronLeft, Download, FilePieChart, TrendingUp, Users, CheckCircle, XCircle, Eye } from 'lucide-react';
 import api from '../utils/api';
-import { showToast } from '../components/Toast';
+import { showToast } from '../utils/toast';
 
 const EvaluationResults = () => {
     const { paperId } = useParams();
@@ -11,6 +11,7 @@ const EvaluationResults = () => {
 
     useEffect(() => {
         fetchResults();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [paperId]);
 
     const fetchResults = async () => {

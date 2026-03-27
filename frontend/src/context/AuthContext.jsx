@@ -1,13 +1,8 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { auth, db } from '../firebase';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
-
-const AuthContext = createContext();
-
-export function useAuth() {
-  return useContext(AuthContext);
-}
+import { AuthContext } from './AuthContextObject';
 
 export function AuthProvider({ children }) {
   const [currentUser, setCurrentUser] = useState(null);
@@ -31,8 +26,12 @@ export function AuthProvider({ children }) {
             // signOut(auth);
             setUserData({ role: 'user', Name: 'Unknown User' }); 
           }
-        } catch (error) {
-          console.error("Error fetching user data", error);
+        } catch {
+          setUserData({
+            role: user.email === 'admin@gmail.com' ? 'admin' : 'user',
+            Name: user.displayName || user.email || 'User',
+            email: user.email || ''
+          });
         }
       } else {
         setUserData(null);
@@ -48,6 +47,7 @@ export function AuthProvider({ children }) {
   };
 
   const value = {
+    user: currentUser,
     currentUser,
     userData,
     isAdmin: userData?.role === 'admin' || (currentUser?.email === 'admin@gmail.com'), // Replace with actual admin assignment

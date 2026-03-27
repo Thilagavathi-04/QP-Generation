@@ -3,13 +3,12 @@ import { UserPlus, User, BookOpen, Trash } from 'lucide-react';
 import { db, secondaryAuth } from '../firebase';
 import { createUserWithEmailAndPassword } from 'firebase/auth';
 import { collection, doc, setDoc, getDocs } from 'firebase/firestore';
-import { showToast } from '../components/Toast';
+import { showToast } from '../utils/toast';
 
 export default function AdminProfile() {
   const [facultyName, setFacultyName] = useState('');
   const [facultyEmail, setFacultyEmail] = useState('');
   const [facultyDept, setFacultyDept] = useState('');
-  const [password, setPassword] = useState('');
   
   const [courses, setCourses] = useState([]);
   const [currentRegulation, setCurrentRegulation] = useState('');
@@ -18,11 +17,7 @@ export default function AdminProfile() {
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(false);
 
-  useEffect(() => {
-    fetchUsers();
-  }, []);
-
-  const fetchUsers = async () => {
+  async function fetchUsers() {
     try {
       const usersCol = collection(db, 'users');
       const snapshot = await getDocs(usersCol);
@@ -32,7 +27,14 @@ export default function AdminProfile() {
       console.error(err);
       showToast('Error loading users', 'error');
     }
-  };
+  }
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      fetchUsers();
+    }, 0);
+    return () => clearTimeout(timer);
+  }, []);
 
   const handleAddCourse = (e) => {
     e.preventDefault();

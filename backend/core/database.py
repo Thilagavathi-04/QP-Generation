@@ -142,6 +142,16 @@ def migrate_database():
             print("Added column questions_data to question_papers table.")
         except:
             pass
+
+        # Add course_outcome_file to subjects
+        try:
+            if db_type == 'sqlite':
+                cursor.execute("ALTER TABLE subjects ADD COLUMN course_outcome_file TEXT")
+            else:
+                cursor.execute("ALTER TABLE subjects ADD COLUMN course_outcome_file VARCHAR(500)")
+            print("Added column course_outcome_file to subjects table.")
+        except:
+            pass
         
         connection.commit()
         cursor.close()
@@ -173,6 +183,7 @@ def init_database():
                     name TEXT NOT NULL,
                     syllabus_file TEXT,
                     book_file TEXT,
+                    course_outcome_file TEXT,
                     use_book_for_generation INTEGER DEFAULT 0,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -368,6 +379,7 @@ def init_database():
                     name VARCHAR(255) NOT NULL,
                     syllabus_file VARCHAR(500),
                     book_file VARCHAR(500),
+                    course_outcome_file VARCHAR(500),
                     use_book_for_generation BOOLEAN DEFAULT FALSE,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,

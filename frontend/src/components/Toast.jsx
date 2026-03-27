@@ -1,15 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { CheckCircle, XCircle, AlertCircle, Info, X } from 'lucide-react'
 import '../styles/Toast.css'
-
-let toastId = 0
-let addToast = null
-
-export const showToast = (message, type = 'info', duration = 3000) => {
-  if (addToast) {
-    addToast(message, type, duration)
-  }
-}
+import { registerToastHandler, clearToastHandler, nextToastId } from '../utils/toast'
 
 const Toast = ({ message, type, onClose }) => {
   const icons = {
@@ -34,8 +26,8 @@ export const ToastContainer = () => {
   const [toasts, setToasts] = useState([])
 
   useEffect(() => {
-    addToast = (message, type, duration) => {
-      const id = toastId++
+    registerToastHandler((message, type, duration) => {
+      const id = nextToastId()
       setToasts(prev => [...prev, { id, message, type }])
 
       if (duration > 0) {
@@ -43,10 +35,10 @@ export const ToastContainer = () => {
           setToasts(prev => prev.filter(t => t.id !== id))
         }, duration)
       }
-    }
+    })
 
     return () => {
-      addToast = null
+      clearToastHandler()
     }
   }, [])
 

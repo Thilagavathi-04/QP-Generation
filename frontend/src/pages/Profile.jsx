@@ -1,10 +1,10 @@
 import React, { useState } from 'react';
-import { useAuth } from '../context/AuthContext';
+import { useAuth } from '../context/useAuth';
 import { db, auth } from '../firebase';
 import { updatePassword } from 'firebase/auth';
 import { doc, updateDoc } from 'firebase/firestore';
 import { User, Mail, Shield, Book, Lock, RefreshCcw, Camera } from 'lucide-react';
-import { showToast } from '../components/Toast';
+import { showToast } from '../utils/toast';
 
 export default function Profile() {
   const { user, userData, isAdmin } = useAuth();
@@ -47,6 +47,8 @@ export default function Profile() {
   };
 
   if (!userData) return <div className="flex items-center justify-center h-screen"><div className="spinner"></div></div>;
+
+  const displayRole = (userData?.role || (isAdmin ? 'admin' : 'user')).toUpperCase();
 
   return (
     <div className="fade-in" style={{ padding: '2rem', maxWidth: '1000px', margin: '0 auto' }}>
@@ -116,7 +118,7 @@ export default function Profile() {
                 fontWeight: '600',
                 backdropFilter: 'blur(5px)'
               }}>
-                {userData.role.toUpperCase()}
+                {displayRole}
               </span>
               <span style={{ 
                 background: 'rgba(255,255,255,0.2)', 

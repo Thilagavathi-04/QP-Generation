@@ -5,17 +5,20 @@ Generates PDF and DOCX question papers from question banks using blueprints
 
 import json
 import re
+import tempfile
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any
+from uuid import uuid4
 from docx import Document
 from docx.shared import Pt, Inches
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as RLImage
 from reportlab.lib import colors
+from reportlab.lib.utils import ImageReader
 from core.database import get_db_type
 
 
@@ -31,6 +34,57 @@ NUMBER_WORDS = {
     "nine": 9,
     "ten": 10,
 }
+
+BLOOMS_ORDER = ["R", "U", "A", "AN", "E", "C"]
+BLOOMS_LABEL = {
+    "R": "Remember",
+    "U": "Understand",
+    "A": "Apply",
+    "AN": "Analyze",
+    "E": "Evaluate",
+    "C": "Create",
+}
+
+
+def _blooms_code_from_marks(marks: float) -> str:
+    try:
+        value = float(marks)
+    except Exception:
+        value = 0.0
+
+    if value <= 1:
+        return "R"
+    if value <= 2:
+        return "U"
+    if value <= 5:
+        return "A"
+    if value <= 10:
+        return "AN"
+    if value <= 14:
+        return "E"
+    return "C"
+
+
+def _build_blooms_mapping(blueprint: Dict[str, Any], questions_by_part: Dict[str, List[Dict[str, Any]]]) -> Dict[str, Dict[str, Any]]:
+    mapping = {
+        code: {"questions": [], "marks": 0.0, "label": BLOOMS_LABEL[code]}
+        for code in BLOOMS_ORDER
+    }
+
+    question_number = 1
+    for part in blueprint.get('parts', []):
+        part_name = part.get('part_name') or part.get('name')
+        part_questions = questions_by_part.get(part_name, [])
+        part_marks = float(part.get('marks_per_question') or 0)
+
+        for q in part_questions:
+            q_marks = float(q.get('marks') or part_marks)
+            code = _blooms_code_from_marks(q_marks)
+            mapping[code]["questions"].append(question_number)
+            mapping[code]["marks"] += q_marks
+            question_number += 1
+
+    return mapping
 
 
 def _parse_answer_any_count(instruction: str) -> int | None:
@@ -56,6 +110,109 @@ def _effective_answer_count(part: Dict[str, Any], fetched_questions_count: int) 
     if answer_any is not None:
         return max(0, min(answer_any, configured_count, fetched_questions_count))
     return max(0, min(configured_count, fetched_questions_count))
+
+
+def _resolve_course_outcome_image(course_outcome_file: str) -> tuple[str | None, str | None]:
+    """
+    Returns (image_path_to_render, temp_file_to_cleanup)
+    - If already image: returns original path and None cleanup
+    - If PDF: converts first page to temp PNG and returns that + cleanup path
+    - Else: returns (None, None)
+    """
+    if not course_outcome_file:
+        return None, None
+
+    source = Path(course_outcome_file)
+    if not source.exists():
+        return None, None
+
+    ext = source.suffix.lower()
+    if ext in {".png", ".jpg", ".jpeg", ".bmp", ".gif"}:
+        return str(source), None
+
+    if ext == ".pdf":
+        try:
+            import fitz  # PyMuPDF
+
+            pdf_doc = fitz.open(str(source))
+            if pdf_doc.page_count == 0:
+                pdf_doc.close()
+                return None, None
+
+            strong_start_terms = ["COURSE OUTCOMES", "Course Outcomes"]
+            fallback_start_terms = ["CO1", "CO 1"]
+            end_terms = ["TEXT BOOKS", "REFERENCE BOOKS", "REFERENCES", "UNIT "]
+            mapping_terms = [
+                "Levels:",
+                "Remembering",
+                "Applying",
+                "Analyze",
+                "Cos / Level",
+                "COs / Level",
+                "Marks",
+            ]
+
+            selected_pix = None
+
+            for page_index in range(min(pdf_doc.page_count, 5)):
+                page = pdf_doc.load_page(page_index)
+                page_rect = page.rect
+
+                start_rects = []
+                for term in strong_start_terms:
+                    start_rects.extend(page.search_for(term))
+
+                if not start_rects:
+                    for term in fallback_start_terms:
+                        start_rects.extend(page.search_for(term))
+
+                if not start_rects:
+                    continue
+
+                start_y = min(r.y0 for r in start_rects)
+
+                end_candidates = []
+                for term in end_terms:
+                    for r in page.search_for(term):
+                        if r.y0 > start_y + 15:
+                            end_candidates.append(r.y0)
+
+                mapping_rects = []
+                for term in mapping_terms:
+                    for r in page.search_for(term):
+                        if r.y0 > start_y + 10:
+                            mapping_rects.append(r)
+
+                if end_candidates:
+                    end_y = min(end_candidates) - 6
+                else:
+                    end_y = page_rect.y1 - 8
+
+                if mapping_rects:
+                    mapping_end_y = max(r.y1 for r in mapping_rects) + 20
+                    end_y = max(end_y, mapping_end_y)
+                    end_y = min(end_y, page_rect.y1 - 6)
+
+                top_y = max(page_rect.y0 + 4, start_y - 2)
+                if end_y <= top_y + 20:
+                    end_y = min(page_rect.y1 - 8, top_y + page_rect.height * 0.45)
+
+                clip = fitz.Rect(page_rect.x0 + 4, top_y, page_rect.x1 - 4, end_y)
+                selected_pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0), clip=clip, alpha=False)
+                break
+
+            if selected_pix is None:
+                page = pdf_doc.load_page(0)
+                selected_pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0), alpha=False)
+
+            temp_png = Path(tempfile.gettempdir()) / f"co_map_{uuid4().hex}.png"
+            selected_pix.save(str(temp_png))
+            pdf_doc.close()
+            return str(temp_png), str(temp_png)
+        except Exception:
+            return None, None
+
+    return None, None
 
 
 def load_blueprint(blueprint_path: str) -> Dict[str, Any]:
@@ -209,7 +366,8 @@ def generate_docx_paper(
     duration: str,
     blueprint: Dict,
     questions_by_part: Dict[str, List[Dict]],
-    output_path: str
+    output_path: str,
+    course_outcome_file: str = None,
 ):
     """Generate DOCX question paper"""
     
@@ -341,9 +499,46 @@ def generate_docx_paper(
             q_para.add_run(q['content'])
             
             question_number += 1
+            doc.add_paragraph()
 
+    blooms_mapping = _build_blooms_mapping(blueprint, questions_by_part)
+    doc.add_paragraph()
+    blooms_heading = doc.add_paragraph()
+    blooms_heading.add_run("Question Blooms Taxonomy Mapping").bold = True
+
+    table = doc.add_table(rows=1, cols=4)
+    table.style = 'Table Grid'
+    header_cells = table.rows[0].cells
+    header_cells[0].text = 'Level'
+    header_cells[1].text = 'Blooms'
+    header_cells[2].text = 'Question Nos'
+    header_cells[3].text = 'Marks'
+
+    for code in BLOOMS_ORDER:
+        row = table.add_row().cells
+        row[0].text = code
+        row[1].text = blooms_mapping[code]["label"]
+        row[2].text = ",".join(str(n) for n in blooms_mapping[code]["questions"])
+        row[3].text = f"{blooms_mapping[code]['marks']:.1f}" if blooms_mapping[code]["marks"] else ""
     
+    co_image_path = None
+    co_temp_cleanup = None
+    if course_outcome_file and Path(course_outcome_file).exists():
+        co_image_path, co_temp_cleanup = _resolve_course_outcome_image(course_outcome_file)
+
     # Footer
+    if course_outcome_file and Path(course_outcome_file).exists():
+        doc.add_paragraph()
+        co_heading = doc.add_paragraph()
+        co_heading.add_run("Course Outcomes").bold = True
+        if co_image_path:
+            try:
+                doc.add_picture(co_image_path, width=Inches(6.3))
+            except Exception:
+                doc.add_paragraph(f"Course outcome file uploaded at: {course_outcome_file}")
+        else:
+            doc.add_paragraph(f"Course outcome file uploaded at: {course_outcome_file}")
+
     doc.add_paragraph("_" * 80)
     footer = doc.add_paragraph()
     footer.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -351,6 +546,12 @@ def generate_docx_paper(
     
     # Save
     doc.save(output_path)
+
+    if co_temp_cleanup:
+        try:
+            Path(co_temp_cleanup).unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 def generate_pdf_paper(
@@ -362,9 +563,15 @@ def generate_pdf_paper(
     duration: str,
     blueprint: Dict,
     questions_by_part: Dict[str, List[Dict]],
-    output_path: str
+    output_path: str,
+    course_outcome_file: str = None,
 ):
     """Generate PDF question paper"""
+
+    co_image_path = None
+    co_temp_cleanup = None
+    if course_outcome_file and Path(course_outcome_file).exists():
+        co_image_path, co_temp_cleanup = _resolve_course_outcome_image(course_outcome_file)
     
     doc = SimpleDocTemplate(
         output_path,
@@ -565,7 +772,48 @@ def generate_pdf_paper(
             question_number += 1
         
         elements.append(Spacer(1, 0.2*inch))
+
+    blooms_mapping = _build_blooms_mapping(blueprint, questions_by_part)
+    elements.append(Spacer(1, 0.2*inch))
+    elements.append(Paragraph("<b>Question Blooms Taxonomy Mapping</b>", heading_style))
+
+    mapping_data = [["Level", "Blooms", "Question Nos", "Marks"]]
+    for code in BLOOMS_ORDER:
+        mapping_data.append([
+            code,
+            blooms_mapping[code]["label"],
+            ",".join(str(n) for n in blooms_mapping[code]["questions"]),
+            f"{blooms_mapping[code]['marks']:.1f}" if blooms_mapping[code]["marks"] else "",
+        ])
+
+    mapping_table = Table(mapping_data, colWidths=[0.8*inch, 1.4*inch, 3.5*inch, 0.8*inch])
+    mapping_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
+        ('GRID', (0, 0), (-1, -1), 1, colors.black),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('ALIGN', (0, 0), (0, -1), 'CENTER'),
+        ('ALIGN', (3, 0), (3, -1), 'CENTER'),
+    ]))
+    elements.append(mapping_table)
     
+    # Course outcomes section (if uploaded)
+    if course_outcome_file and Path(course_outcome_file).exists():
+        elements.append(Spacer(1, 0.2*inch))
+        elements.append(Paragraph("<b>Course Outcomes</b>", heading_style))
+        if co_image_path:
+            try:
+                img_reader = ImageReader(co_image_path)
+                img_w, img_h = img_reader.getSize()
+                max_w = 6.5 * inch
+                ratio = max_w / float(img_w) if img_w else 1
+                img = RLImage(co_image_path, width=max_w, height=float(img_h) * ratio)
+                elements.append(img)
+            except Exception:
+                elements.append(Paragraph(f"Course outcome file uploaded at: {course_outcome_file}", normal_style))
+        else:
+            elements.append(Paragraph(f"Course outcome file uploaded at: {course_outcome_file}", normal_style))
+
     # Footer
     elements.append(Paragraph("_" * 100, normal_style))
     elements.append(Spacer(1, 0.1*inch))
@@ -573,7 +821,14 @@ def generate_pdf_paper(
     elements.append(Paragraph("<i>*** End of Question Paper ***</i>", footer_style))
     
     # Build PDF
-    doc.build(elements)
+    try:
+        doc.build(elements)
+    finally:
+        if co_temp_cleanup:
+            try:
+                Path(co_temp_cleanup).unlink(missing_ok=True)
+            except Exception:
+                pass
 
 
 def generate_question_paper(
@@ -665,18 +920,30 @@ def generate_question_paper(
     print(f"Output file: {output_path}")
     print(f"{'='*60}\n")
     
+    # Load course outcome file path for this subject
+    course_outcome_file = None
+    placeholder = "?" if get_db_type() == "sqlite" else "%s"
+    try:
+        cursor.execute(f"SELECT course_outcome_file FROM subjects WHERE id = {placeholder}", (subject_id,))
+        subject_row = cursor.fetchone()
+        if subject_row:
+            row = dict(subject_row) if not isinstance(subject_row, dict) else subject_row
+            course_outcome_file = row.get("course_outcome_file")
+    except Exception:
+        course_outcome_file = None
+
     # Generate paper based on format
     if file_format.lower() == 'pdf':
         print("📄 Generating PDF...")
         generate_pdf_paper(
             title, subject_name, exam_type, exam_date or 'TBD',
-            total_marks, duration, blueprint, questions_by_part, output_path
+            total_marks, duration, blueprint, questions_by_part, output_path, course_outcome_file
         )
     elif file_format.lower() == 'docx':
         print("📄 Generating DOCX...")
         generate_docx_paper(
             title, subject_name, exam_type, exam_date or 'TBD',
-            total_marks, duration, blueprint, questions_by_part, output_path
+            total_marks, duration, blueprint, questions_by_part, output_path, course_outcome_file
         )
     else:
         raise ValueError(f"Unsupported file format: {file_format}")

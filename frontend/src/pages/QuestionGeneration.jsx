@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { RefreshCw, Save, ArrowRight, ArrowLeft, CheckCircle, Plus, Trash2, Settings, X, Eye } from 'lucide-react'
 import api from '../utils/api'
-import { showToast } from '../components/Toast'
+import { showToast } from '../utils/toast'
 import Modal from '../components/Modal'
 
 const QuestionGeneration = () => {
@@ -11,8 +11,6 @@ const QuestionGeneration = () => {
   const [units, setUnits] = useState([])
   const [topics, setTopics] = useState([])
   const [existingBanks, setExistingBanks] = useState([])
-  const [saveMode, setSaveMode] = useState('new') // 'new' or 'existing'
-  const [selectedBankId, setSelectedBankId] = useState('')
   const [modalState, setModalState] = useState({ isOpen: false, type: '', data: null })
   const [currentPart, setCurrentPart] = useState(0)
   const [isGenerating, setIsGenerating] = useState(false)
@@ -61,6 +59,7 @@ const QuestionGeneration = () => {
 
   useEffect(() => {
     fetchSubjectData()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [subjectId])
 
   const fetchSubjectData = async () => {
@@ -80,9 +79,6 @@ const QuestionGeneration = () => {
       // Fetch existing question banks
       const banksResponse = await api.get(`/api/question-banks/subject/${subjectId}`)
       setExistingBanks(banksResponse.data)
-      if (banksResponse.data.length > 0) {
-        setSelectedBankId(banksResponse.data[0].id)
-      }
     } catch (error) {
       console.error('Error fetching subject data:', error)
       showToast('Failed to fetch subject data', 'error')
@@ -110,6 +106,7 @@ const QuestionGeneration = () => {
     if (unitRange.from && unitRange.to) {
       fetchTopics()
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [unitRange])
 
   const toggleQuestionExpand = (questionId) => {
@@ -441,18 +438,6 @@ const QuestionGeneration = () => {
 
     setTopics(prev => [...prev, newTopic])
     showToast('Topic added successfully', 'success')
-  }
-
-  const nextPart = () => {
-    if (currentPart < parts.length - 1) {
-      setCurrentPart(currentPart + 1)
-    }
-  }
-
-  const prevPart = () => {
-    if (currentPart > 0) {
-      setCurrentPart(currentPart - 1)
-    }
   }
 
   if (!subject) {
@@ -819,7 +804,7 @@ const QuestionGeneration = () => {
                   type="checkbox"
                   checked={currentPartData.generatedQuestions.length > 0 &&
                     currentPartData.selectedQuestions.length === currentPartData.generatedQuestions.length}
-                  onChange={(e) => {
+                  onChange={() => {
                     const allSelected = currentPartData.selectedQuestions.length === currentPartData.generatedQuestions.length
                     setParts(prev => {
                       const newParts = [...prev]
