@@ -433,6 +433,7 @@ def generate_questions_with_ollama(
     part_name: str,
     context: Optional[str] = None,
     ai_provider: Optional[str] = None,
+    blooms_level: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
     Generate questions using Ollama AI model with retry logic to ensure count is reached
@@ -493,8 +494,9 @@ def generate_questions_with_ollama(
         else:
             # ORIGINAL PROMPT FOR HIGHER-MARK QUESTIONS
             marks_instruction = get_marks_instruction(marks)
-            blooms_level = get_blooms_level(marks)
-            blooms_instruction = get_blooms_instruction(blooms_level)
+            # Allow caller to override Bloom's level explicitly; otherwise derive from marks
+            effective_blooms_level = blooms_level or get_blooms_level(marks)
+            blooms_instruction = get_blooms_instruction(effective_blooms_level)
 
             prompt = f"""
             You are a professional academic question paper generator.
@@ -514,7 +516,7 @@ def generate_questions_with_ollama(
             - {marks_instruction}
 
             2. BLOOM'S TAXONOMY (VERY STRICT):
-            - Each question MUST follow Bloom's level: {blooms_level}
+            - Each question MUST follow Bloom's level: {effective_blooms_level}
             - {blooms_instruction}
 
             3. COMBINED RULE:
@@ -552,6 +554,11 @@ def generate_questions_with_ollama(
             Do not include any conversational text, markdown formatting (except the JSON itself), or explanations.
             """
         # --- END: DYNAMIC PROMPT SELECTION ---
+
+        # Track the Bloom level used in the prompt for attaching to each question
+        blooms_for_prompt: Optional[str] = None
+        if marks > 1:
+            blooms_for_prompt = effective_blooms_level
 
         try:
             try:
@@ -597,7 +604,8 @@ def generate_questions_with_ollama(
                         "difficulty": str(q.get("difficulty", difficulty)).lower(),
                         "topic": str(q.get("topic", topics[0] if topics else "")).strip(),
                         "unit": str(q.get("unit", "1")).strip(),
-                        "part": part_name
+                        "part": part_name,
+                        "blooms_level": blooms_for_prompt,
                     }
                     
                     if cleaned_q["content"] and len(all_questions) < count:

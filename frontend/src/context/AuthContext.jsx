@@ -1,8 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import { auth, db } from '../firebase';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
-import { doc, getDoc } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, query, where } from 'firebase/firestore';
 import { AuthContext } from './AuthContextObject';
+
+// Emails that should always have admin access, regardless of Firestore role
+const SUPER_ADMIN_EMAILS = ['admin@gmail.com', 'uthilakz@gmail.com'];
 
 export function AuthProvider({ children }) {
   const [currentUser, setCurrentUser] = useState(null);
@@ -13,22 +16,33 @@ export function AuthProvider({ children }) {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       setCurrentUser(user);
       if (user) {
-        // Fetch user data from Firestore using their email OR uid
-        // In the images, standard Firestore IDs were used. Let's lookup by id=uid, or if not found log out?
-        // We'll search by doc(db, "users", user.uid) assuming we created them securely, otherwise just by doc ID.
         try {
           const docRef = doc(db, 'users', user.uid);
           const docSnap = await getDoc(docRef);
           if (docSnap.exists()) {
             setUserData(docSnap.data());
           } else {
-            // Fallback: If no document found, you can sign them out or create a shell. Allow empty for testing:
-            // signOut(auth);
-            setUserData({ role: 'user', Name: 'Unknown User' }); 
+            // If no document by UID, try looking up by email (for admins or legacy users)
+            const usersRef = collection(db, 'users');
+            const q = query(usersRef, where('email', '==', user.email));
+            const snapshot = await getDocs(q);
+
+            if (!snapshot.empty) {
+              setUserData(snapshot.docs[0].data());
+            } else {
+              // Final fallback – treat as normal faculty unless email is a configured super admin
+              const isSuperAdmin = user.email && SUPER_ADMIN_EMAILS.includes(user.email);
+              setUserData({
+                role: isSuperAdmin ? 'admin' : 'user',
+                Name: user.displayName || user.email || 'User',
+                email: user.email || ''
+              });
+            }
           }
         } catch {
+          const isSuperAdmin = user.email && SUPER_ADMIN_EMAILS.includes(user.email);
           setUserData({
-            role: user.email === 'admin@gmail.com' ? 'admin' : 'user',
+            role: isSuperAdmin ? 'admin' : 'user',
             Name: user.displayName || user.email || 'User',
             email: user.email || ''
           });
@@ -50,7 +64,9 @@ export function AuthProvider({ children }) {
     user: currentUser,
     currentUser,
     userData,
-    isAdmin: userData?.role === 'admin' || (currentUser?.email === 'admin@gmail.com'), // Replace with actual admin assignment
+    isAdmin:
+      (userData && String(userData.role || '').toLowerCase() === 'admin') ||
+      (currentUser?.email && SUPER_ADMIN_EMAILS.includes(currentUser.email)),
     logout
   };
 

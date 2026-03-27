@@ -589,7 +589,11 @@ async def get_subject_units(subject_id: int):
 
 @app.get("/api/subjects/{subject_id}/topics")
 async def get_subject_topics(subject_id: int, from_unit: Optional[int] = None, to_unit: Optional[int] = None):
-    """Get topics for a subject, optionally filtered by unit range"""
+    """Get topics and subtopics for a subject, optionally filtered by unit range.
+
+    This endpoint now returns both top-level topics and their subtopics as
+    flattened "topics" so the UI and generators can cover the full syllabus.
+    """
     connection = get_db_connection()
     if not connection:
         raise HTTPException(status_code=500, detail="Database connection failed")
@@ -598,31 +602,75 @@ async def get_subject_topics(subject_id: int, from_unit: Optional[int] = None, t
         cursor = get_cursor(connection)
         placeholder = get_placeholder()
         
+        # Base topics
         if from_unit is not None and to_unit is not None:
-            query = f"""
-                SELECT t.*, u.unit_number, u.unit_title 
+            topic_query = f"""
+                SELECT t.id, t.topic_name, u.unit_number, u.unit_title
                 FROM topics t
                 JOIN units u ON t.unit_id = u.id
                 WHERE u.subject_id = {placeholder} AND u.unit_number BETWEEN {placeholder} AND {placeholder}
                 ORDER BY u.unit_number, t.id
             """
-            cursor.execute(query, (subject_id, from_unit, to_unit))
+            cursor.execute(topic_query, (subject_id, from_unit, to_unit))
         else:
-            query = f"""
-                SELECT t.*, u.unit_number, u.unit_title 
+            topic_query = f"""
+                SELECT t.id, t.topic_name, u.unit_number, u.unit_title
                 FROM topics t
                 JOIN units u ON t.unit_id = u.id
                 WHERE u.subject_id = {placeholder}
                 ORDER BY u.unit_number, t.id
             """
-            cursor.execute(query, (subject_id,))
-        
-        topics = cursor.fetchall()
-        
+            cursor.execute(topic_query, (subject_id,))
+
+        topic_rows = cursor.fetchall()
+
+        # Related subtopics, flattened as independent topics
+        if from_unit is not None and to_unit is not None:
+            subtopic_query = f"""
+                SELECT s.id AS subtopic_id, s.subtopic_name, u.unit_number, u.unit_title
+                FROM subtopics s
+                JOIN topics t ON s.topic_id = t.id
+                JOIN units u ON t.unit_id = u.id
+                WHERE u.subject_id = {placeholder} AND u.unit_number BETWEEN {placeholder} AND {placeholder}
+                ORDER BY u.unit_number, s.id
+            """
+            cursor.execute(subtopic_query, (subject_id, from_unit, to_unit))
+        else:
+            subtopic_query = f"""
+                SELECT s.id AS subtopic_id, s.subtopic_name, u.unit_number, u.unit_title
+                FROM subtopics s
+                JOIN topics t ON s.topic_id = t.id
+                JOIN units u ON t.unit_id = u.id
+                WHERE u.subject_id = {placeholder}
+                ORDER BY u.unit_number, s.id
+            """
+            cursor.execute(subtopic_query, (subject_id,))
+
+        subtopic_rows = cursor.fetchall()
+
         cursor.close()
         connection.close()
-        
-        return {'topics': [dict(t) for t in topics]}
+
+        flattened = []
+
+        for row in topic_rows:
+            d = dict(row)
+            # Keep a stable string id and mark kind for debugging/extension
+            d['id'] = f"topic-{d['id']}"
+            d['kind'] = 'topic'
+            flattened.append(d)
+
+        for row in subtopic_rows:
+            d = {
+                'id': f"subtopic-{row['subtopic_id']}",
+                'topic_name': row['subtopic_name'],
+                'unit_number': row['unit_number'],
+                'unit_title': row['unit_title'],
+                'kind': 'subtopic',
+            }
+            flattened.append(d)
+
+        return {'topics': flattened}
     except HTTPException:
         raise
     except Exception as e:
@@ -648,15 +696,31 @@ async def generate_questions(subject_id: int, request: QuestionGenerationRequest
         cursor = get_cursor(connection)
         placeholder = get_placeholder()
         
-        # Get topics between the unit range
+        # Get topics and subtopics between the unit range so question generation
+        # covers the full syllabus rather than only high-level topics.
+        # MySQL requires every derived table (subquery in FROM) to have its own alias.
+        # Wrap the UNION query and alias it as `topic_union`.
         query = f"""
-            SELECT t.topic_name, u.unit_number, u.unit_title
-            FROM topics t
-            JOIN units u ON t.unit_id = u.id
-            WHERE u.subject_id = {placeholder} AND u.unit_number BETWEEN {placeholder} AND {placeholder}
-            ORDER BY u.unit_number
+            SELECT tu.topic_name, tu.unit_number, tu.unit_title
+            FROM (
+                SELECT t.topic_name AS topic_name,
+                       u.unit_number AS unit_number,
+                       u.unit_title AS unit_title
+                FROM topics t
+                JOIN units u ON t.unit_id = u.id
+                WHERE u.subject_id = {placeholder} AND u.unit_number BETWEEN {placeholder} AND {placeholder}
+                UNION ALL
+                SELECT s.subtopic_name AS topic_name,
+                       u2.unit_number AS unit_number,
+                       u2.unit_title AS unit_title
+                FROM subtopics s
+                JOIN topics t2 ON s.topic_id = t2.id
+                JOIN units u2 ON t2.unit_id = u2.id
+                WHERE u2.subject_id = {placeholder} AND u2.unit_number BETWEEN {placeholder} AND {placeholder}
+            ) AS tu
+            ORDER BY tu.unit_number
         """
-        cursor.execute(query, (subject_id, request.from_unit, request.to_unit))
+        cursor.execute(query, (subject_id, request.from_unit, request.to_unit, subject_id, request.from_unit, request.to_unit))
         topics_data = cursor.fetchall()
 
         # Get subject details for RAG
@@ -689,20 +753,52 @@ async def generate_questions(subject_id: int, request: QuestionGenerationRequest
             context_str = None
 
         try:
-            questions = generate_questions_with_ollama(
-                topics=topics,
-                count=request.count,
-                marks=request.marks,
-                difficulty=request.difficulty,
-                part_name=request.part_name,
-                context=context_str,
-                ai_provider=request.ai_provider,
-            )
-            
+            all_questions = []
+
+            # If a detailed generation plan is provided, honor it and
+            # generate questions per unit/difficulty/Bloom combination.
+            if request.plan:
+                for item in request.plan:
+                    unit_topics = [
+                        f"{t['topic_name']} (Unit {t['unit_number']})"
+                        for t in topics_data
+                        if int(t['unit_number']) == int(item.unit)
+                    ]
+
+                    if not unit_topics:
+                        continue
+
+                    unit_questions = generate_questions_with_ollama(
+                        topics=unit_topics,
+                        count=item.count,
+                        marks=request.marks,
+                        difficulty=item.difficulty,
+                        part_name=request.part_name,
+                        context=context_str,
+                        ai_provider=request.ai_provider,
+                        blooms_level=item.blooms_level,
+                    )
+
+                    for q in unit_questions:
+                        q.setdefault('unit', str(item.unit))
+                        q.setdefault('difficulty', item.difficulty)
+                    all_questions.extend(unit_questions)
+            else:
+                # Backwards-compatible single-range generation
+                all_questions = generate_questions_with_ollama(
+                    topics=topics,
+                    count=request.count,
+                    marks=request.marks,
+                    difficulty=request.difficulty,
+                    part_name=request.part_name,
+                    context=context_str,
+                    ai_provider=request.ai_provider,
+                )
+
             return {
                 'success': True,
-                'count': len(questions),
-                'questions': questions,
+                'count': len(all_questions),
+                'questions': all_questions,
                 'topics_covered': len(topics)
             }
         except Exception as e:
@@ -751,7 +847,7 @@ async def generate_all_questions(subject_id: int, requests: List[QuestionGenerat
         import asyncio
         
         tasks_inputs = []
-        
+
         for request in requests:
             query = f"""
                 SELECT t.topic_name, u.unit_number, u.unit_title
@@ -762,11 +858,11 @@ async def generate_all_questions(subject_id: int, requests: List[QuestionGenerat
             """
             cursor.execute(query, (subject_id, request.from_unit, request.to_unit))
             topics_data = cursor.fetchall()
-            
+
             if topics_data:
                 # Extract topic names from the query result
                 topics = [dict(row)['topic_name'] for row in topics_data]
-                
+
                 # RAG INTEGRATION: Try to get context for each part
                 context_str = None
                 try:
@@ -777,6 +873,7 @@ async def generate_all_questions(subject_id: int, requests: List[QuestionGenerat
                     print(f"RAG Retrieval Error: {rag_err}")
 
                 tasks_inputs.append({
+                    'topics_data': topics_data,
                     'topics': topics,
                     'request': request,
                     'context_str': context_str
@@ -785,24 +882,59 @@ async def generate_all_questions(subject_id: int, requests: List[QuestionGenerat
         async def fetch_questions(input_data):
             req = input_data['request']
             try:
-                # Run the blocking AI model generation in a dedicated thread
-                questions = await asyncio.to_thread(
-                    generate_questions_with_ollama,
-                    topics=input_data['topics'],
-                    count=req.count,
-                    marks=req.marks,
-                    difficulty=req.difficulty,
-                    part_name=req.part_name,
-                    context=input_data['context_str'],
-                    ai_provider=req.ai_provider,
-                )
-                
+                all_questions = []
+                topics_data = input_data['topics_data']
+                topics = input_data['topics']
+                context_str = input_data['context_str']
+
+                # If this part has a detailed plan, honor it by generating per
+                # unit/difficulty/Bloom combination and aggregating.
+                if req.plan:
+                    for item in req.plan:
+                        unit_topics = [
+                            f"{row['topic_name']} (Unit {row['unit_number']})"
+                            for row in topics_data
+                            if int(row['unit_number']) == int(item.unit)
+                        ]
+
+                        if not unit_topics:
+                            continue
+
+                        unit_questions = await asyncio.to_thread(
+                            generate_questions_with_ollama,
+                            topics=unit_topics,
+                            count=item.count,
+                            marks=req.marks,
+                            difficulty=item.difficulty,
+                            part_name=req.part_name,
+                            context=context_str,
+                            ai_provider=req.ai_provider,
+                            blooms_level=item.blooms_level,
+                        )
+
+                        for q in unit_questions:
+                            q.setdefault('unit', str(item.unit))
+                            q.setdefault('difficulty', item.difficulty)
+                        all_questions.extend(unit_questions)
+                else:
+                    # Backwards-compatible behavior for parts without a plan
+                    all_questions = await asyncio.to_thread(
+                        generate_questions_with_ollama,
+                        topics=topics,
+                        count=req.count,
+                        marks=req.marks,
+                        difficulty=req.difficulty,
+                        part_name=req.part_name,
+                        context=context_str,
+                        ai_provider=req.ai_provider,
+                    )
+
                 return {
                     'part_name': req.part_name,
                     'success': True,
-                    'count': len(questions),
-                    'questions': questions,
-                    'topics_covered': len(input_data['topics'])
+                    'count': len(all_questions),
+                    'questions': all_questions,
+                    'topics_covered': len(topics)
                 }
             except Exception as e:
                 return {
@@ -1942,6 +2074,7 @@ async def generate_question_paper_from_data(request: dict):
                 questions_by_part=questions_by_part,
                 output_path=str(output_path),
                 course_outcome_file=course_outcome_file,
+                subject_code=subject.get('subject_id'),
             )
         else:  # docx
             from services.paper_generator import generate_docx_paper

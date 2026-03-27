@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import { RefreshCw, Save, ArrowRight, ArrowLeft, CheckCircle, Plus, Trash2, Settings, X, Eye } from 'lucide-react'
+import { RefreshCw, Save, ArrowRight, ArrowLeft, CheckCircle, Plus, Trash2, Settings, X, Eye, Edit3 } from 'lucide-react'
 import api from '../utils/api'
 import { showToast } from '../utils/toast'
 import Modal from '../components/Modal'
@@ -17,45 +17,79 @@ const QuestionGeneration = () => {
   const [showPartConfig, setShowPartConfig] = useState(false)
   const [aiProvider, setAiProvider] = useState('auto')
   const [expandedQuestions, setExpandedQuestions] = useState({})
-  const [parts, setParts] = useState([
-    {
-      id: 1,
-      name: 'Part A',
-      markPerQuestion: 0.5,
-      totalMarks: 6,
-      questionsNeeded: 12,
-      difficulty: 'easy',
-      generatedQuestions: [],
-      selectedQuestions: []
-    },
-    {
-      id: 2,
-      name: 'Part B',
-      markPerQuestion: 2,
-      totalMarks: 16,
-      questionsNeeded: 8,
-      difficulty: 'medium',
-      generatedQuestions: [],
-      selectedQuestions: []
-    },
-    {
-      id: 3,
-      name: 'Part C',
-      markPerQuestion: 5,
-      totalMarks: 15,
-      questionsNeeded: 3,
-      difficulty: 'hard',
-      generatedQuestions: [],
-      selectedQuestions: []
-    }
-  ])
+  const [parts, setParts] = useState([])
   const [newPart, setNewPart] = useState({
     name: '',
     markPerQuestion: '',
     questionsNeeded: '',
-    difficulty: 'medium'
+    difficulty: 'medium',
+    plan: []
   })
+  const [editingPartId, setEditingPartId] = useState(null)
   const [unitRange, setUnitRange] = useState({ from: '', to: '' })
+
+  const normalizePart = (part) => {
+    const normalized = {
+      ...part,
+      difficulty: part.difficulty || 'medium',
+      generatedQuestions: Array.isArray(part.generatedQuestions) ? part.generatedQuestions : [],
+      selectedQuestions: Array.isArray(part.selectedQuestions) ? part.selectedQuestions : [],
+      plan: Array.isArray(part.plan) ? part.plan : []
+    }
+    return normalized
+  }
+
+  const getActivePlan = () => {
+    if (editingPartId !== null) {
+      return parts[currentPart]?.plan || []
+    }
+    return newPart.plan || []
+  }
+
+  const getActivePlanTotal = () => {
+    return getActivePlan().reduce((sum, row) => sum + (parseInt(row.count) || 0), 0)
+  }
+
+  const setActivePlan = (plan) => {
+    if (editingPartId !== null) {
+      setParts(prev => {
+        const updated = [...prev]
+        const part = { ...updated[currentPart], plan }
+        updated[currentPart] = part
+        return updated
+      })
+    } else {
+      setNewPart(prev => ({ ...prev, plan }))
+    }
+  }
+
+  const getQuestionsNeeded = (part) => {
+    if (part.plan && part.plan.length > 0) {
+      return part.plan.reduce((sum, row) => sum + (parseInt(row.count) || 0), 0)
+    }
+    return part.questionsNeeded
+  }
+
+  const hasPlanRules = (part) => Array.isArray(part?.plan) && part.plan.length > 0
+
+  useEffect(() => {
+    setParts(prev => {
+      let changed = false
+      const updated = prev.map(part => {
+        const normalized = normalizePart(part)
+        if (
+          part.difficulty !== normalized.difficulty ||
+          part.generatedQuestions !== normalized.generatedQuestions ||
+          part.selectedQuestions !== normalized.selectedQuestions ||
+          part.plan !== normalized.plan
+        ) {
+          changed = true
+        }
+        return normalized
+      })
+      return changed ? updated : prev
+    })
+  }, [])
 
   useEffect(() => {
     fetchSubjectData()
@@ -117,6 +151,11 @@ const QuestionGeneration = () => {
   }
 
   const generateQuestions = async (partIndex, refresh = false) => {
+    if (parts.length === 0) {
+      showToast('Please add at least one part first', 'warning')
+      return
+    }
+
     if (!unitRange.from || !unitRange.to) {
       showToast('Please select unit range first', 'warning')
       return
@@ -124,9 +163,14 @@ const QuestionGeneration = () => {
 
     setIsGenerating(true)
 
+    const effectiveNeeded = getQuestionsNeeded(parts[partIndex])
     const questionsToGenerate = refresh
-      ? parts[partIndex].questionsNeeded - parts[partIndex].selectedQuestions.length
-      : parts[partIndex].questionsNeeded
+      ? effectiveNeeded - (parts[partIndex].selectedQuestions || []).length
+      : effectiveNeeded
+
+    const plan = parts[partIndex].plan && parts[partIndex].plan.length > 0
+      ? parts[partIndex].plan
+      : undefined
 
     try {
       const response = await api.post(`/api/subjects/${subjectId}/generate-questions`, {
@@ -137,6 +181,7 @@ const QuestionGeneration = () => {
         difficulty: parts[partIndex].difficulty,
         part_name: parts[partIndex].name,
         ai_provider: aiProvider,
+        plan,
       })
 
       if (response.data.success) {
@@ -146,13 +191,14 @@ const QuestionGeneration = () => {
           unit: q.unit,
           topic: q.topic,
           difficulty: q.difficulty || parts[partIndex].difficulty,
-          marks: q.marks || parts[partIndex].markPerQuestion
+          marks: q.marks || parts[partIndex].markPerQuestion,
+          bloomsLevel: q.blooms_level || null,
         }))
 
         setParts(prev => {
           const newParts = [...prev]
           if (refresh) {
-            const selectedQuestions = [...newParts[partIndex].selectedQuestions]
+            const selectedQuestions = [...(newParts[partIndex].selectedQuestions || [])]
             newParts[partIndex].generatedQuestions = [...selectedQuestions, ...generatedQuestions]
           } else {
             newParts[partIndex].generatedQuestions = generatedQuestions
@@ -172,6 +218,11 @@ const QuestionGeneration = () => {
   }
 
   const generateAllParts = async (refresh = false) => {
+    if (parts.length === 0) {
+      showToast('Please add at least one part first', 'warning')
+      return
+    }
+
     if (!unitRange.from || !unitRange.to) {
       showToast('Please select unit range first', 'warning')
       return
@@ -181,9 +232,10 @@ const QuestionGeneration = () => {
 
     try {
       const requests = parts.map(part => {
+        const effectiveNeeded = getQuestionsNeeded(part)
         const questionsToGenerate = refresh
-          ? part.questionsNeeded - part.selectedQuestions.length
-          : part.questionsNeeded
+          ? effectiveNeeded - (part.selectedQuestions || []).length
+          : effectiveNeeded
 
         return {
           from_unit: unitRange.from,
@@ -193,6 +245,7 @@ const QuestionGeneration = () => {
           difficulty: part.difficulty,
           part_name: part.name,
           ai_provider: aiProvider,
+          plan: part.plan && part.plan.length > 0 ? part.plan : undefined,
         }
       })
 
@@ -210,11 +263,12 @@ const QuestionGeneration = () => {
                 unit: q.unit,
                 topic: q.topic,
                 difficulty: q.difficulty || newParts[partIndex].difficulty,
-                marks: q.marks || newParts[partIndex].markPerQuestion
+                marks: q.marks || newParts[partIndex].markPerQuestion,
+                bloomsLevel: q.blooms_level || null,
               }))
 
               if (refresh) {
-                const selectedQuestions = [...newParts[partIndex].selectedQuestions]
+                const selectedQuestions = [...(newParts[partIndex].selectedQuestions || [])]
                 newParts[partIndex].generatedQuestions = [...selectedQuestions, ...generatedQuestions]
               } else {
                 newParts[partIndex].generatedQuestions = generatedQuestions
@@ -239,12 +293,15 @@ const QuestionGeneration = () => {
   const toggleQuestionSelection = (partIndex, question) => {
     setParts(prev => {
       const newParts = [...prev]
-      const isCurrentlySelected = newParts[partIndex].selectedQuestions.some(q => q.id === question.id)
+      const currentSelected = Array.isArray(newParts[partIndex].selectedQuestions)
+        ? newParts[partIndex].selectedQuestions
+        : []
+      const isCurrentlySelected = currentSelected.some(q => q.id === question.id)
 
       if (isCurrentlySelected) {
-        newParts[partIndex].selectedQuestions = newParts[partIndex].selectedQuestions.filter(q => q.id !== question.id)
+        newParts[partIndex].selectedQuestions = currentSelected.filter(q => q.id !== question.id)
       } else {
-        newParts[partIndex].selectedQuestions = [...newParts[partIndex].selectedQuestions, question]
+        newParts[partIndex].selectedQuestions = [...currentSelected, question]
       }
 
       return newParts
@@ -254,7 +311,7 @@ const QuestionGeneration = () => {
   const saveAllPartsToQuestionBank = async () => {
     const allSelectedQuestions = []
     parts.forEach(part => {
-      part.selectedQuestions.forEach(q => {
+      (part.selectedQuestions || []).forEach(q => {
         allSelectedQuestions.push({
           content: String(q.content || ""),
           part: String(part.name || ""),
@@ -345,8 +402,8 @@ const QuestionGeneration = () => {
       return prev.map(part => ({
         ...part,
         selectedQuestions: [],
-        generatedQuestions: part.generatedQuestions.filter(
-          q => !part.selectedQuestions.some(sq => sq.id === q.id)
+        generatedQuestions: (part.generatedQuestions || []).filter(
+          q => !(part.selectedQuestions || []).some(sq => sq.id === q.id)
         )
       }))
     })
@@ -355,28 +412,53 @@ const QuestionGeneration = () => {
   const addPart = () => {
     console.log('addPart called with:', newPart)
 
-    if (!newPart.name || !newPart.markPerQuestion || !newPart.questionsNeeded || !newPart.difficulty) {
+    const planTotal = getActivePlanTotal()
+    if (!newPart.name || !newPart.markPerQuestion || (!newPart.questionsNeeded && planTotal === 0) || !newPart.difficulty) {
       showToast('Please fill all fields including difficulty', 'warning')
       return
     }
 
-    const totalMarks = parseFloat(newPart.markPerQuestion) * parseInt(newPart.questionsNeeded)
-    const newPartData = {
-      id: parts.length + 1,
-      name: newPart.name,
-      markPerQuestion: parseFloat(newPart.markPerQuestion),
-      totalMarks: totalMarks,
-      questionsNeeded: parseInt(newPart.questionsNeeded),
-      difficulty: newPart.difficulty,
-      generatedQuestions: [],
-      selectedQuestions: []
-    }
+    const questionsNeededValue = planTotal > 0 ? planTotal : parseInt(newPart.questionsNeeded)
+    const totalMarks = parseFloat(newPart.markPerQuestion) * questionsNeededValue
+    if (editingPartId !== null) {
+      // Update existing part
+      setParts(prevParts =>
+        prevParts.map(part =>
+          part.id === editingPartId
+            ? {
+                ...part,
+                name: newPart.name,
+                markPerQuestion: parseFloat(newPart.markPerQuestion),
+                totalMarks: totalMarks,
+                questionsNeeded: questionsNeededValue,
+                difficulty: newPart.difficulty
+              }
+            : part
+        )
+      )
+      setEditingPartId(null)
+      setNewPart({ name: '', markPerQuestion: '', questionsNeeded: '', difficulty: 'medium', plan: [] })
+      showToast('Part updated successfully', 'success')
+    } else {
+      const maxId = parts.reduce((max, part) => Math.max(max, part.id), 0)
+      const newPartData = {
+        id: maxId + 1,
+        name: newPart.name,
+        markPerQuestion: parseFloat(newPart.markPerQuestion),
+        totalMarks: totalMarks,
+        questionsNeeded: questionsNeededValue,
+        difficulty: newPart.difficulty,
+        generatedQuestions: [],
+        selectedQuestions: [],
+        plan: newPart.plan || []
+      }
 
-    console.log('Adding new part:', newPartData)
-    setParts([...parts, newPartData])
-    setNewPart({ name: '', markPerQuestion: '', questionsNeeded: '', difficulty: 'medium' })
-    setShowPartConfig(false)
-    showToast('Part added successfully', 'success')
+      console.log('Adding new part:', newPartData)
+      setParts([...parts, newPartData])
+      setNewPart({ name: '', markPerQuestion: '', questionsNeeded: '', difficulty: 'medium', plan: [] })
+      setShowPartConfig(false)
+      showToast('Part added successfully', 'success')
+    }
   }
 
   const deletePart = (partId) => {
@@ -401,12 +483,20 @@ const QuestionGeneration = () => {
     })
   }
 
-  const updatePartDifficulty = (partIndex, difficulty) => {
-    setParts(prev => {
-      const newParts = [...prev]
-      newParts[partIndex].difficulty = difficulty
-      return newParts
+  const startEditPart = (part) => {
+    setNewPart({
+      name: part.name,
+      markPerQuestion: String(part.markPerQuestion),
+      questionsNeeded: String(part.questionsNeeded),
+      difficulty: part.difficulty,
+      plan: part.plan || []
     })
+    setEditingPartId(part.id)
+    setShowPartConfig(true)
+    const index = parts.findIndex(p => p.id === part.id)
+    if (index !== -1) {
+      setCurrentPart(index)
+    }
   }
 
   const removeTopic = (topicId) => {
@@ -444,8 +534,22 @@ const QuestionGeneration = () => {
     return <div className="loading"><div className="spinner"></div></div>
   }
 
-  const currentPartData = parts[currentPart]
-  const totalSelectedQuestions = parts.reduce((sum, part) => sum + part.selectedQuestions.length, 0)
+  const currentPartData = parts[currentPart] || {
+    name: '',
+    markPerQuestion: 0,
+    totalMarks: 0,
+    questionsNeeded: 0,
+    difficulty: 'medium',
+    generatedQuestions: [],
+    selectedQuestions: [],
+    plan: []
+  }
+  const currentGenerated = currentPartData.generatedQuestions || []
+  const currentSelected = currentPartData.selectedQuestions || []
+  const totalSelectedQuestions = parts.reduce((sum, part) => {
+    const selected = Array.isArray(part.selectedQuestions) ? part.selectedQuestions.length : 0
+    return sum + selected
+  }, 0)
 
   return (
     <div>
@@ -593,8 +697,8 @@ const QuestionGeneration = () => {
       {showPartConfig && (
         <div className="card">
           <h3>Configure Question Parts</h3>
-          <div className="form-row">
-            <div className="form-group">
+          <div className="question-config-grid">
+            <div className="form-group question-config-field">
               <label className="form-label">Part Name *</label>
               <input
                 type="text"
@@ -604,7 +708,7 @@ const QuestionGeneration = () => {
                 onChange={(e) => setNewPart({ ...newPart, name: e.target.value })}
               />
             </div>
-            <div className="form-group">
+            <div className="form-group question-config-field">
               <label className="form-label">Marks per Question *</label>
               <input
                 type="number"
@@ -616,19 +720,25 @@ const QuestionGeneration = () => {
                 onChange={(e) => setNewPart({ ...newPart, markPerQuestion: e.target.value })}
               />
             </div>
-            <div className="form-group">
+            <div className="form-group question-config-field">
               <label className="form-label">Number of Questions *</label>
               <input
                 type="number"
                 min="1"
                 className="form-input"
                 placeholder="e.g., 10, 20"
-                value={newPart.questionsNeeded}
+                value={getActivePlanTotal() > 0 ? getActivePlanTotal() : newPart.questionsNeeded}
                 onChange={(e) => setNewPart({ ...newPart, questionsNeeded: e.target.value })}
+                disabled={getActivePlanTotal() > 0}
               />
+              {getActivePlanTotal() > 0 && (
+                <div className="question-config-help" style={{ marginTop: '0.35rem', fontSize: '0.75rem', color: '#6b7280' }}>
+                  Number of Questions is auto-calculated from rules.
+                </div>
+              )}
             </div>
-            <div className="form-group">
-              <label className="form-label">Difficulty *</label>
+            <div className="form-group question-config-field">
+              <label className="form-label">Default Difficulty *</label>
               <select
                 className="form-select"
                 value={newPart.difficulty}
@@ -638,8 +748,12 @@ const QuestionGeneration = () => {
                 <option value="medium">Medium</option>
                 <option value="hard">Hard</option>
               </select>
+              <div className="question-config-help" style={{ marginTop: '0.35rem', fontSize: '0.75rem', color: '#6b7280' }}>
+                Used only as fallback when no per-rule difficulty is set.
+              </div>
             </div>
-            <div className="form-group" style={{ display: 'flex', alignItems: 'flex-end' }}>
+            <div className="form-group question-config-action">
+              <label className="form-label" style={{ visibility: 'hidden' }}>Action</label>
               <button
                 type="button"
                 onClick={(e) => {
@@ -650,17 +764,178 @@ const QuestionGeneration = () => {
                 style={{ width: '100%' }}
               >
                 <Plus size={16} />
-                Add Part
+                {editingPartId !== null ? 'Update Part' : 'Add Part'}
               </button>
             </div>
           </div>
 
-          {newPart.markPerQuestion && newPart.questionsNeeded && (
+          {newPart.markPerQuestion && (newPart.questionsNeeded || getActivePlanTotal() > 0) && (
             <div style={{ marginTop: '1rem', padding: '1rem', backgroundColor: '#f8f9fa', borderRadius: '4px' }}>
               <strong>Preview:</strong> Total marks for this part will be{' '}
-              {(parseFloat(newPart.markPerQuestion) * parseInt(newPart.questionsNeeded)).toFixed(1)} marks
+              {(parseFloat(newPart.markPerQuestion) * (getActivePlanTotal() > 0 ? getActivePlanTotal() : parseInt(newPart.questionsNeeded))).toFixed(1)} marks
             </div>
           )}
+
+          {/* Unit/Difficulty/Bloom rules for the currently selected part */}
+          <div style={{ marginTop: '1.5rem' }}>
+            <h4>Part Rules (Unit / Difficulty / Bloom)</h4>
+            <p style={{ fontSize: '0.85rem', color: '#6b7280', marginBottom: '0.75rem' }}>
+              Add per-unit rules while creating or editing the current part (<strong>{editingPartId !== null ? parts[currentPart]?.name : newPart.name || 'New Part'}</strong>).
+            </p>
+
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+                <thead>
+                  <tr style={{ backgroundColor: '#f3f4f6' }}>
+                    <th style={{ padding: '0.5rem', textAlign: 'left' }}>Unit</th>
+                    <th style={{ padding: '0.5rem', textAlign: 'left' }}>Difficulty</th>
+                    <th style={{ padding: '0.5rem', textAlign: 'left' }}>Bloom&apos;s Level</th>
+                    <th style={{ padding: '0.5rem', textAlign: 'left' }}>Count</th>
+                    <th style={{ padding: '0.5rem' }}></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {getActivePlan().map((row, idx) => (
+                    <tr key={idx} style={{ borderTop: '1px solid #e5e7eb' }}>
+                      <td style={{ padding: '0.5rem' }}>
+                        <select
+                          className="form-select"
+                          value={row.unit}
+                          onChange={(e) => {
+                            const value = parseInt(e.target.value)
+                            const plan = [...getActivePlan()]
+                            plan[idx] = { ...plan[idx], unit: value }
+                            setActivePlan(plan)
+                          }}
+                        >
+                          <option value="">Select Unit</option>
+                          {(units.filter(unit => {
+                            if (!unitRange.from || !unitRange.to) return true
+                            const from = Number(unitRange.from)
+                            const to = Number(unitRange.to)
+                            return unit.unit_number >= from && unit.unit_number <= to
+                          })).map(unit => (
+                            <option key={unit.id} value={unit.unit_number}>
+                              Unit {unit.unit_number}: {unit.unit_title}
+                            </option>
+                          ))}
+                        </select>
+                      </td>
+                      <td style={{ padding: '0.5rem' }}>
+                        <select
+                          className="form-select"
+                          value={row.difficulty}
+                          onChange={(e) => {
+                            const value = e.target.value
+                            const plan = [...getActivePlan()]
+                            plan[idx] = { ...plan[idx], difficulty: value }
+                            setActivePlan(plan)
+                          }}
+                        >
+                          <option value="easy">Easy</option>
+                          <option value="medium">Medium</option>
+                          <option value="hard">Hard</option>
+                        </select>
+                      </td>
+                      <td style={{ padding: '0.5rem' }}>
+                        <select
+                          className="form-select"
+                          value={row.blooms_level || ''}
+                          onChange={(e) => {
+                            const value = e.target.value
+                            const plan = [...getActivePlan()]
+                            plan[idx] = { ...plan[idx], blooms_level: value }
+                            setActivePlan(plan)
+                          }}
+                        >
+                          <option value="">Select Level</option>
+                          <option value="Remember">Remember</option>
+                          <option value="Understand">Understand</option>
+                          <option value="Apply">Apply</option>
+                          <option value="Analyze">Analyze</option>
+                          <option value="Evaluate">Evaluate</option>
+                          <option value="Create">Create</option>
+                        </select>
+                      </td>
+                      <td style={{ padding: '0.5rem', width: '100px' }}>
+                        <input
+                          type="number"
+                          min="1"
+                          className="form-input"
+                          value={row.count}
+                          onChange={(e) => {
+                            const value = parseInt(e.target.value) || 0
+                            const plan = [...getActivePlan()]
+                            plan[idx] = { ...plan[idx], count: value }
+                            setActivePlan(plan)
+                          }}
+                        />
+                      </td>
+                      <td style={{ padding: '0.5rem', textAlign: 'center' }}>
+                        <button
+                          type="button"
+                          className="btn btn-danger"
+                          style={{ padding: '0.25rem 0.5rem', fontSize: '0.75rem' }}
+                          onClick={() => {
+                            const plan = [...getActivePlan()]
+                            plan.splice(idx, 1)
+                            setActivePlan(plan)
+                          }}
+                        >
+                          Remove
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                  {getActivePlan().length === 0 && (
+                    <tr>
+                      <td colSpan={5} style={{ padding: '0.75rem', fontSize: '0.8rem', color: '#9ca3af' }}>
+                        No rules defined yet. Use "Add Rule" to specify per-unit counts.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            <div style={{ marginTop: '0.75rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <button
+                type="button"
+                className="btn btn-outline"
+                onClick={() => {
+                  if (!units.length) {
+                    showToast('Units are not loaded yet', 'warning')
+                    return
+                  }
+                  let defaultUnit
+                  if (unitRange.from && unitRange.to) {
+                    const from = Number(unitRange.from)
+                    const to = Number(unitRange.to)
+                    const inRange = units.filter(u => u.unit_number >= from && u.unit_number <= to)
+                    defaultUnit = (inRange[0] || units[0]).unit_number
+                  } else {
+                    defaultUnit = units[0].unit_number
+                  }
+                  const plan = [...getActivePlan()]
+                  plan.push({
+                    unit: defaultUnit,
+                    difficulty: (editingPartId !== null ? parts[currentPart]?.difficulty : newPart.difficulty) || 'medium',
+                    blooms_level: 'Understand',
+                    count: 1
+                  })
+                  setActivePlan(plan)
+                }}
+              >
+                <Plus size={14} style={{ marginRight: '0.25rem' }} />
+                Add Rule
+              </button>
+
+              <div style={{ fontSize: '0.8rem', color: '#4b5563' }}>
+                Total planned questions for {editingPartId !== null ? parts[currentPart]?.name : newPart.name || 'this part'}:{' '}
+                <strong>{getActivePlan().reduce((sum, row) => sum + (parseInt(row.count) || 0), 0)}</strong>
+              </div>
+            </div>
+          </div>
 
           <div style={{ marginTop: '1.5rem' }}>
             <h4>Current Parts</h4>
@@ -679,67 +954,87 @@ const QuestionGeneration = () => {
                   }}
                 >
                   <div>
-                    <strong>{part.name}</strong> - {part.markPerQuestion} marks × {part.questionsNeeded} questions = {part.totalMarks} marks
+                    <strong>{part.name}</strong> - {part.markPerQuestion} marks × {getQuestionsNeeded(part)} questions = {(part.markPerQuestion * getQuestionsNeeded(part)).toFixed(1)} marks
                     <span style={{
                       marginLeft: '0.5rem',
                       padding: '0.25rem 0.5rem',
                       borderRadius: '4px',
                       fontSize: '0.75rem',
-                      backgroundColor: part.difficulty === 'easy' ? 'var(--success-100)' : part.difficulty === 'medium' ? 'var(--warning-100)' : 'var(--danger-100)',
-                      color: part.difficulty === 'easy' ? 'var(--success-700)' : part.difficulty === 'medium' ? 'var(--warning-700)' : 'var(--danger-700)'
+                      backgroundColor: hasPlanRules(part)
+                        ? '#e0ecff'
+                        : ((part.difficulty || 'medium') === 'easy' ? 'var(--success-100)' : (part.difficulty || 'medium') === 'medium' ? 'var(--warning-100)' : 'var(--danger-100)'),
+                      color: hasPlanRules(part)
+                        ? '#1d4ed8'
+                        : ((part.difficulty || 'medium') === 'easy' ? 'var(--success-700)' : (part.difficulty || 'medium') === 'medium' ? 'var(--warning-700)' : 'var(--danger-700)')
                     }}>
-                      {part.difficulty.charAt(0).toUpperCase() + part.difficulty.slice(1)}
+                      {hasPlanRules(part) ? 'Rule-based' : ((part.difficulty || 'medium').charAt(0).toUpperCase() + (part.difficulty || 'medium').slice(1))}
                     </span>
                   </div>
-                  <button
-                    onClick={() => deletePart(part.id)}
-                    className="btn btn-danger"
-                    style={{ padding: '0.25rem 0.5rem', fontSize: '0.875rem' }}
-                  >
-                    <Trash2 size={14} />
-                  </button>
+                  <div style={{ display: 'flex', gap: '0.5rem' }}>
+                    <button
+                      onClick={() => startEditPart(part)}
+                      className="btn btn-outline"
+                      style={{ padding: '0.25rem 0.5rem', fontSize: '0.875rem' }}
+                    >
+                      <Edit3 size={14} />
+                    </button>
+                    <button
+                      onClick={() => deletePart(part.id)}
+                      className="btn btn-danger"
+                      style={{ padding: '0.25rem 0.5rem', fontSize: '0.875rem' }}
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
           </div>
+
         </div>
       )}
 
       <div className="card">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <div style={{ display: 'flex', gap: '1rem' }}>
-            {parts.map((part, index) => (
-              <button
-                key={part.id}
-                onClick={() => setCurrentPart(index)}
-                className={`btn ${currentPart === index ? 'btn-primary' : 'btn-outline'}`}
-                style={{ position: 'relative', overflow: 'visible' }}
-              >
-                {part.name}
-                <span style={{
-                    position: 'absolute',
-                    top: '-10px',
-                    right: '-10px',
-                    zIndex: 10,
-                    backgroundColor: '#28a745',
-                    color: 'white',
-                    borderRadius: '50%',
-                    width: '20px',
-                    height: '20px',
-                    fontSize: '12px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center'
-                  }}>
-                    {part.selectedQuestions.length}
-                  </span>
-              </button>
-            ))}
+            {parts.length === 0 ? (
+              <span style={{ fontSize: '0.85rem', color: '#6b7280' }}>
+                No parts configured yet. Use "Configure Question Parts" above to add parts.
+              </span>
+            ) : (
+              parts.map((part, index) => (
+                <button
+                  key={part.id}
+                  onClick={() => setCurrentPart(index)}
+                  className={`btn ${currentPart === index ? 'btn-primary' : 'btn-outline'}`}
+                  style={{ position: 'relative', overflow: 'visible' }}
+                >
+                  {part.name}
+                  <span style={{
+                      position: 'absolute',
+                      top: '-10px',
+                      right: '-10px',
+                      zIndex: 10,
+                      backgroundColor: '#28a745',
+                      color: 'white',
+                      borderRadius: '50%',
+                      width: '20px',
+                      height: '20px',
+                      fontSize: '12px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center'
+                    }}>
+                      {(part.selectedQuestions || []).length}
+                    </span>
+                </button>
+              ))
+            )}
           </div>
           <div style={{ display: 'flex', gap: '1rem' }}>
             <button
               onClick={() => generateAllParts(false)}
-              disabled={isGenerating || !unitRange.from || !unitRange.to}
+              disabled={isGenerating || !unitRange.from || !unitRange.to || parts.length === 0}
               className="btn btn-primary"
               style={{ padding: '0.5rem 1rem', fontSize: '0.875rem' }}
             >
@@ -754,41 +1049,35 @@ const QuestionGeneration = () => {
         </div>
       </div>
 
-      <div className="part-container">
+      {parts.length > 0 && currentPartData && (
+        <div className="part-container">
         <div className="part-header">
           <div>
             <h3 className="part-title">{currentPartData.name}</h3>
             <p style={{ margin: '0.5rem 0 0 0', color: '#666' }}>
               {currentPartData.markPerQuestion} marks per question •
               Total: {currentPartData.totalMarks} marks •
-              Need: {currentPartData.questionsNeeded} questions •
+              Need: {getQuestionsNeeded(currentPartData)} questions •
               <span style={{
                 marginLeft: '0.5rem',
                 padding: '0.25rem 0.5rem',
                 borderRadius: '4px',
                 fontSize: '0.75rem',
-                backgroundColor: currentPartData.difficulty === 'easy' ? 'var(--success-100)' : currentPartData.difficulty === 'medium' ? 'var(--warning-100)' : 'var(--danger-100)',
-                color: currentPartData.difficulty === 'easy' ? 'var(--success-700)' : currentPartData.difficulty === 'medium' ? 'var(--warning-700)' : 'var(--danger-700)'
+                backgroundColor: hasPlanRules(currentPartData)
+                  ? '#e0ecff'
+                  : ((currentPartData.difficulty || 'medium') === 'easy' ? 'var(--success-100)' : (currentPartData.difficulty || 'medium') === 'medium' ? 'var(--warning-100)' : 'var(--danger-100)'),
+                color: hasPlanRules(currentPartData)
+                  ? '#1d4ed8'
+                  : ((currentPartData.difficulty || 'medium') === 'easy' ? 'var(--success-700)' : (currentPartData.difficulty || 'medium') === 'medium' ? 'var(--warning-700)' : 'var(--danger-700)')
               }}>
-                {currentPartData.difficulty.charAt(0).toUpperCase() + currentPartData.difficulty.slice(1)}
+                {hasPlanRules(currentPartData)
+                  ? 'Rule-based'
+                  : ((currentPartData.difficulty || 'medium').charAt(0).toUpperCase() + (currentPartData.difficulty || 'medium').slice(1))}
               </span>
             </p>
           </div>
           <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
-            <div className="form-group" style={{ margin: 0, minWidth: '140px' }}>
-              <label className="form-label" style={{ fontSize: '0.75rem', marginBottom: '0.25rem' }}>Difficulty:</label>
-              <select
-                className="form-select"
-                value={currentPartData.difficulty}
-                onChange={(e) => updatePartDifficulty(currentPart, e.target.value)}
-                style={{ padding: '0.4rem 0.75rem', fontSize: '0.875rem' }}
-              >
-                <option value="easy">Easy</option>
-                <option value="medium">Medium</option>
-                <option value="hard">Hard</option>
-              </select>
-            </div>
-            {currentPartData.generatedQuestions.length > 0 && (
+            {currentGenerated.length > 0 && (
               <label style={{
                 display: 'flex',
                 alignItems: 'center',
@@ -802,28 +1091,28 @@ const QuestionGeneration = () => {
               }}>
                 <input
                   type="checkbox"
-                  checked={currentPartData.generatedQuestions.length > 0 &&
-                    currentPartData.selectedQuestions.length === currentPartData.generatedQuestions.length}
+                  checked={currentGenerated.length > 0 &&
+                    currentSelected.length === currentGenerated.length}
                   onChange={() => {
-                    const allSelected = currentPartData.selectedQuestions.length === currentPartData.generatedQuestions.length
+                    const allSelected = currentSelected.length === currentGenerated.length
                     setParts(prev => {
                       const newParts = [...prev]
                       if (allSelected) {
                         newParts[currentPart].selectedQuestions = []
                       } else {
-                        newParts[currentPart].selectedQuestions = [...currentPartData.generatedQuestions]
+                        newParts[currentPart].selectedQuestions = [...currentGenerated]
                       }
                       return newParts
                     })
                   }}
                   style={{ cursor: 'pointer', width: '16px', height: '16px' }}
                 />
-                Select All ({currentPartData.generatedQuestions.length})
+                Select All ({currentGenerated.length})
               </label>
             )}
             <button
               onClick={() => generateQuestions(currentPart, true)}
-              disabled={isGenerating || currentPartData.generatedQuestions.length === 0}
+              disabled={isGenerating || currentGenerated.length === 0}
               className="btn btn-warning"
             >
               {isGenerating ? (
@@ -848,19 +1137,19 @@ const QuestionGeneration = () => {
         </div>
 
         <div className="part-content">
-          {isGenerating && currentPartData.generatedQuestions.length === 0 ? (
+          {isGenerating && currentGenerated.length === 0 ? (
             <div style={{ textAlign: 'center', padding: '3rem', color: '#666' }}>
               <div className="spinner" style={{ width: '40px', height: '40px', margin: '0 auto 1rem' }}></div>
-              <p>Generating {currentPartData.difficulty} questions, please wait...</p>
+              <p>Generating {currentPartData.difficulty || 'medium'} questions, please wait...</p>
             </div>
-          ) : currentPartData.generatedQuestions.length === 0 ? (
+          ) : currentGenerated.length === 0 ? (
             <div style={{ textAlign: 'center', padding: '3rem', color: '#666' }}>
               <p>No questions generated yet. Click "Generate Questions" to start.</p>
             </div>
           ) : (
             <div className="grid">
-              {currentPartData.generatedQuestions.map((question, index) => {
-                const isSelected = currentPartData.selectedQuestions.some(q => q.id === question.id)
+              {currentGenerated.map((question, index) => {
+                const isSelected = currentSelected.some(q => q.id === question.id)
                 const isExpanded = expandedQuestions[question.id]
 
                 return (
@@ -919,6 +1208,20 @@ const QuestionGeneration = () => {
                             }}>
                               ⭐ {question.difficulty}
                             </span>
+                              {question.bloomsLevel && (
+                                <span style={{
+                                  padding: '0.25rem 0.6rem',
+                                  borderRadius: '6px',
+                                  fontSize: '0.75rem',
+                                  fontWeight: '600',
+                                  backgroundColor: '#e0ecff',
+                                  color: '#1d4ed8',
+                                  textTransform: 'capitalize',
+                                  letterSpacing: '0.02em'
+                                }}>
+                                  🎓 {question.bloomsLevel}
+                                </span>
+                              )}
                             <span style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', color: 'var(--primary-600)', fontSize: '0.85rem', fontWeight: '600' }}>
                               🎯 {question.marks} marks
                             </span>
@@ -933,6 +1236,7 @@ const QuestionGeneration = () => {
           )}
         </div>
       </div>
+      )}
 
       <div className="card">
         <h3>Generation Progress</h3>
@@ -957,16 +1261,22 @@ const QuestionGeneration = () => {
                   padding: '0.25rem 0.5rem',
                   borderRadius: '4px',
                   fontSize: '0.7rem',
-                  backgroundColor: part.difficulty === 'easy' ? 'var(--success-100)' : part.difficulty === 'medium' ? 'var(--warning-100)' : 'var(--danger-100)',
-                  color: part.difficulty === 'easy' ? 'var(--success-700)' : part.difficulty === 'medium' ? 'var(--warning-700)' : 'var(--danger-700)'
+                  backgroundColor: hasPlanRules(part)
+                    ? '#e0ecff'
+                    : ((part.difficulty || 'medium') === 'easy' ? 'var(--success-100)' : (part.difficulty || 'medium') === 'medium' ? 'var(--warning-100)' : 'var(--danger-100)'),
+                  color: hasPlanRules(part)
+                    ? '#1d4ed8'
+                    : ((part.difficulty || 'medium') === 'easy' ? 'var(--success-700)' : (part.difficulty || 'medium') === 'medium' ? 'var(--warning-700)' : 'var(--danger-700)')
                 }}>
-                  {part.difficulty.charAt(0).toUpperCase() + part.difficulty.slice(1)}
+                  {hasPlanRules(part)
+                    ? 'Rule-based'
+                    : ((part.difficulty || 'medium').charAt(0).toUpperCase() + (part.difficulty || 'medium').slice(1))}
                 </span>
               </h4>
               <div style={{ fontSize: '0.875rem', color: '#666' }}>
-                <div>Selected: {part.selectedQuestions.length}/{part.questionsNeeded}</div>
-                <div>Generated: {part.generatedQuestions.length}</div>
-                <div>Marks: {part.markPerQuestion} × {part.questionsNeeded} = {part.totalMarks}</div>
+                <div>Selected: {(part.selectedQuestions || []).length}/{part.questionsNeeded}</div>
+                  <div>Generated: {(part.generatedQuestions || []).length}</div>
+                  <div>Marks: {part.markPerQuestion} × {getQuestionsNeeded(part)} = {part.totalMarks}</div>
               </div>
               <div style={{
                 width: '100%',
@@ -976,7 +1286,7 @@ const QuestionGeneration = () => {
                 marginTop: '0.5rem'
               }}>
                 <div style={{
-                  width: `${(part.selectedQuestions.length / part.questionsNeeded) * 100}%`,
+                  width: `${(getQuestionsNeeded(part) ? ((part.selectedQuestions || []).length / getQuestionsNeeded(part)) * 100 : 0)}%`,
                   height: '100%',
                   backgroundColor: '#28a745',
                   borderRadius: '2px',

@@ -565,6 +565,7 @@ def generate_pdf_paper(
     questions_by_part: Dict[str, List[Dict]],
     output_path: str,
     course_outcome_file: str = None,
+    subject_code: str | None = None,
 ):
     """Generate PDF question paper"""
 
@@ -717,9 +718,19 @@ def generate_pdf_paper(
     elements.append(meta_table)
     elements.append(Spacer(1, 0.1*inch))
     
-    # 🎓 EXAM DETAILS
-    elements.append(Paragraph(exam_type.upper() if "Examination" in exam_type else f"{exam_type.upper()} EXAMINATION", exam_title_style))
-    elements.append(Paragraph(f"Subject: {subject_name}", sub_title_style))
+    # 🎓 EXAM DETAILS (match college style header)
+    exam_title_text = exam_type.upper() if "EXAMINATION" in exam_type.upper() else f"{exam_type.upper()} EXAMINATION"
+    elements.append(Paragraph(exam_title_text, exam_title_style))
+
+    # Optional second line from title (e.g., semester/regulation)
+    if title:
+        elements.append(Paragraph(title, sub_title_style))
+
+    # Subject code + name line like "21OCE02 – Disaster Preparedness and Management"
+    if subject_code:
+        elements.append(Paragraph(f"{subject_code} \\u2013 {subject_name}", sub_title_style))
+    else:
+        elements.append(Paragraph(f"Subject: {subject_name}", sub_title_style))
     
     # Time and Marks line
     time_marks = [

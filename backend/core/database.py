@@ -19,6 +19,7 @@ db_type = os.getenv('DB_TYPE', 'sqlite').lower()
 if db_type == 'mysql':
     import mysql.connector
     from mysql.connector import Error
+    
 else:
     # Define a dummy Error class for SQLite
     class Error(Exception):

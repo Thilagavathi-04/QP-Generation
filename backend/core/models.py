@@ -2,6 +2,13 @@ from pydantic import BaseModel, Field, EmailStr
 from typing import Optional, List
 from datetime import datetime, date
 
+class GenerationPlanItem(BaseModel):
+    """Fine-grained generation plan entry for one unit/difficulty/Bloom combination."""
+    unit: int = Field(..., ge=1)
+    difficulty: str
+    blooms_level: Optional[str] = None  # e.g. Remember, Understand, Apply, Analyze, Evaluate, Create
+    count: int = Field(..., gt=0)
+
 class QuestionGenerationRequest(BaseModel):
     from_unit: int
     to_unit: int
@@ -11,6 +18,9 @@ class QuestionGenerationRequest(BaseModel):
     part_name: Optional[str] = "Part A"  # Optional with default
     question_bank_id: Optional[int] = None
     ai_provider: Optional[str] = "auto"  # auto | ollama | xai | openai | gemini
+    # Optional advanced per-unit plan; when provided, the backend will ignore
+    # the single global `count`/`difficulty` and instead generate per plan item.
+    plan: Optional[List[GenerationPlanItem]] = None
 
 
 class SubjectCreate(BaseModel):

@@ -205,11 +205,19 @@ def extract_topic_candidates(unit_content: str) -> List[str]:
         
         # Check if line contains topic separators (-, :, etc.)
         if any(sep in line for sep in [' - ', ' – ', ': ', ' : ']):
-            # Split by these separators
+            # First split by these separators
             parts = re.split(r'\s*[\-–:]\s*', line)
-            candidates.extend([p.strip() for p in parts if p.strip()])
+            # Then further split each part by commas/semicolons so that
+            # densely packed lists (a, b, c, ...) become individual
+            # topic candidates instead of one long string.
+            for part in parts:
+                part = part.strip()
+                if not part:
+                    continue
+                subparts = re.split(r'\s*[,;]\s*', part)
+                candidates.extend([sp.strip() for sp in subparts if sp.strip()])
         
-        # Split by commas or semicolons (for subtopics)
+        # Split by commas or semicolons (for subtopics) when no -/: present
         elif any(sep in line for sep in [', ', '; ', ' , ', ' ; ']):
             parts = re.split(r'\s*[,;]\s*', line)
             candidates.extend([p.strip() for p in parts if p.strip()])
