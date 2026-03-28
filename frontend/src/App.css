@@ -196,6 +196,22 @@
   }
 }
 
+.part-rules-table th,
+.part-rules-table td {
+  vertical-align: middle;
+}
+
+.part-rules-table td {
+  padding-top: 0.625rem !important;
+  padding-bottom: 0.625rem !important;
+}
+
+.part-rules-control {
+  min-height: 48px;
+  height: 48px;
+  margin: 0;
+}
+
 /* Button Styles */
 .btn {
   padding: 0.875rem 1.75rem;

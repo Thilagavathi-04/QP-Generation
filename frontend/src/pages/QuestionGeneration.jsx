@@ -784,7 +784,7 @@ const QuestionGeneration = () => {
             </p>
 
             <div style={{ overflowX: 'auto' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+              <table className="part-rules-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
                 <thead>
                   <tr style={{ backgroundColor: '#f3f4f6' }}>
                     <th style={{ padding: '0.5rem', textAlign: 'left' }}>Unit</th>
@@ -799,7 +799,7 @@ const QuestionGeneration = () => {
                     <tr key={idx} style={{ borderTop: '1px solid #e5e7eb' }}>
                       <td style={{ padding: '0.5rem' }}>
                         <select
-                          className="form-select"
+                          className="form-select part-rules-control"
                           value={row.unit}
                           onChange={(e) => {
                             const value = parseInt(e.target.value)
@@ -823,7 +823,7 @@ const QuestionGeneration = () => {
                       </td>
                       <td style={{ padding: '0.5rem' }}>
                         <select
-                          className="form-select"
+                          className="form-select part-rules-control"
                           value={row.difficulty}
                           onChange={(e) => {
                             const value = e.target.value
@@ -839,7 +839,7 @@ const QuestionGeneration = () => {
                       </td>
                       <td style={{ padding: '0.5rem' }}>
                         <select
-                          className="form-select"
+                          className="form-select part-rules-control"
                           value={row.blooms_level || ''}
                           onChange={(e) => {
                             const value = e.target.value
@@ -861,7 +861,7 @@ const QuestionGeneration = () => {
                         <input
                           type="number"
                           min="1"
-                          className="form-input"
+                          className="form-input part-rules-control"
                           value={row.count}
                           onChange={(e) => {
                             const value = parseInt(e.target.value) || 0
@@ -1151,6 +1151,10 @@ const QuestionGeneration = () => {
               {currentGenerated.map((question, index) => {
                 const isSelected = currentSelected.some(q => q.id === question.id)
                 const isExpanded = expandedQuestions[question.id]
+                const rawUnit = question.unit
+                const unitLabel = rawUnit
+                  ? (String(rawUnit).toLowerCase().startsWith('unit') ? String(rawUnit) : `Unit ${rawUnit}`)
+                  : null
 
                 return (
                   <div
@@ -1191,6 +1195,11 @@ const QuestionGeneration = () => {
                       {isExpanded && (
                         <div className="question-meta" style={{ marginTop: '1rem', paddingTop: '1rem', borderTop: '1px solid var(--secondary-100)' }}>
                           <div style={{ display: 'flex', gap: '1.5rem', flexWrap: 'wrap' }}>
+                            {unitLabel && (
+                              <span style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', color: 'var(--secondary-600)', fontSize: '0.85rem' }}>
+                                📘 <span style={{ fontWeight: '500' }}>{unitLabel}</span>
+                              </span>
+                            )}
                             {question.topic && (
                               <span style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', color: 'var(--secondary-600)', fontSize: '0.85rem' }}>
                                 📚 <span style={{ fontWeight: '500' }}>{question.topic}</span>
@@ -1208,20 +1217,20 @@ const QuestionGeneration = () => {
                             }}>
                               ⭐ {question.difficulty}
                             </span>
-                              {question.bloomsLevel && (
-                                <span style={{
-                                  padding: '0.25rem 0.6rem',
-                                  borderRadius: '6px',
-                                  fontSize: '0.75rem',
-                                  fontWeight: '600',
-                                  backgroundColor: '#e0ecff',
-                                  color: '#1d4ed8',
-                                  textTransform: 'capitalize',
-                                  letterSpacing: '0.02em'
-                                }}>
-                                  🎓 {question.bloomsLevel}
-                                </span>
-                              )}
+                            {question.bloomsLevel && (
+                              <span style={{
+                                padding: '0.25rem 0.6rem',
+                                borderRadius: '6px',
+                                fontSize: '0.75rem',
+                                fontWeight: '600',
+                                backgroundColor: '#e0ecff',
+                                color: '#1d4ed8',
+                                textTransform: 'capitalize',
+                                letterSpacing: '0.02em'
+                              }}>
+                                🎓 {question.bloomsLevel}
+                              </span>
+                            )}
                             <span style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', color: 'var(--primary-600)', fontSize: '0.85rem', fontWeight: '600' }}>
                               🎯 {question.marks} marks
                             </span>
