@@ -128,7 +128,11 @@ const QuestionGeneration = () => {
             to_unit: unitRange.to
           }
         })
-        setTopics(response.data.topics)
+        const topicsWithSelection = response.data.topics.map(t => ({
+          ...t,
+          deselected: false
+        }))
+        setTopics(topicsWithSelection)
       } catch (error) {
         console.error('Error fetching topics:', error)
         showToast('Failed to fetch topics', 'error')
@@ -142,6 +146,24 @@ const QuestionGeneration = () => {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [unitRange])
+
+  const toggleTopicSelection = (topicId) => {
+    const topicToToggle = topics.find(t => t.id === topicId)
+    if (!topicToToggle) return
+
+    // If we are trying to deselect (current state is selected)
+    if (!topicToToggle.deselected) {
+      const selectedCount = topics.filter(t => !t.deselected).length
+      if (selectedCount <= 1) {
+        showToast('At least one topic must be selected', 'warning')
+        return
+      }
+    }
+
+    setTopics(prev => prev.map(t => 
+      t.id === topicId ? { ...t, deselected: !t.deselected } : t
+    ))
+  }
 
   const toggleQuestionExpand = (questionId) => {
     setExpandedQuestions(prev => ({
@@ -165,12 +187,12 @@ const QuestionGeneration = () => {
 
     const effectiveNeeded = getQuestionsNeeded(parts[partIndex])
     const questionsToGenerate = refresh
-      ? effectiveNeeded - (parts[partIndex].selectedQuestions || []).length
-      : effectiveNeeded
+      ? parts[partIndex].questionsNeeded - parts[partIndex].selectedQuestions.length
+      : parts[partIndex].questionsNeeded
 
-    const plan = parts[partIndex].plan && parts[partIndex].plan.length > 0
-      ? parts[partIndex].plan
-      : undefined
+    const selectedTopicNames = topics
+      .filter(t => !t.deselected)
+      .map(t => `${t.topic_name} (Unit ${t.unit_number})`)
 
     try {
       const response = await api.post(`/api/subjects/${subjectId}/generate-questions`, {
@@ -181,6 +203,7 @@ const QuestionGeneration = () => {
         difficulty: parts[partIndex].difficulty,
         part_name: parts[partIndex].name,
         ai_provider: aiProvider,
+        topics: selectedTopicNames.length > 0 ? selectedTopicNames : null
         plan,
       })
 
@@ -230,6 +253,10 @@ const QuestionGeneration = () => {
 
     setIsGenerating(true)
 
+    const selectedTopicNames = topics
+      .filter(t => !t.deselected)
+      .map(t => `${t.topic_name}`)
+
     try {
       const requests = parts.map(part => {
         const effectiveNeeded = getQuestionsNeeded(part)
@@ -246,6 +273,7 @@ const QuestionGeneration = () => {
           part_name: part.name,
           ai_provider: aiProvider,
           plan: part.plan && part.plan.length > 0 ? part.plan : undefined,
+          topics: selectedTopicNames.length > 0 ? selectedTopicNames : null
         }
       })
 
@@ -523,7 +551,8 @@ const QuestionGeneration = () => {
     const newTopic = {
       id: `manual-${Date.now()}`,
       unit_number: parseInt(unitNumber),
-      topic_name: topicName.trim()
+      topic_name: topicName.trim(),
+      deselected: false
     }
 
     setTopics(prev => [...prev, newTopic])
@@ -654,32 +683,36 @@ const QuestionGeneration = () => {
                   key={topic.id}
                   style={{
                     padding: '0.25rem 0.75rem',
-                    backgroundColor: 'var(--primary-500)',
-                    color: 'white',
+                    backgroundColor: topic.deselected ? '#e9ecef' : 'var(--primary-500)',
+                    color: topic.deselected ? '#6c757d' : 'white',
+                    border: topic.deselected ? '1px solid #dee2e6' : 'none',
                     borderRadius: '12px',
                     fontSize: '0.75rem',
                     display: 'flex',
                     alignItems: 'center',
-                    gap: '0.5rem'
+                    gap: '0.5rem',
+                    transition: 'all 0.2s ease',
+                    cursor: 'default'
                   }}
                 >
                   Unit {topic.unit_number}: {topic.topic_name}
                   <button
-                    onClick={() => removeTopic(topic.id)}
+                    onClick={() => toggleTopicSelection(topic.id)}
                     style={{
                       background: 'none',
                       border: 'none',
-                      color: 'white',
+                      color: topic.deselected ? '#6c757d' : 'white',
                       cursor: 'pointer',
                       padding: 0,
                       display: 'flex',
                       alignItems: 'center',
-                      fontSize: '1.25rem',
-                      lineHeight: '1'
+                      fontSize: topic.deselected ? '1rem' : '1.25rem',
+                      lineHeight: '1',
+                      fontWeight: 'bold'
                     }}
-                    title="Remove topic"
+                    title={topic.deselected ? "Select topic" : "Deselect topic"}
                   >
-                    ×
+                    {topic.deselected ? '+' : '×'}
                   </button>
                 </span>
               ))}

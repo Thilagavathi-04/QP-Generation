@@ -730,17 +730,20 @@ async def generate_questions(subject_id: int, request: QuestionGenerationRequest
         cursor.close()
         connection.close()
         
-        if not topics_data:
-            raise HTTPException(status_code=404, detail="No topics found for the specified unit range")
-        
+        # Determine topics to use
+        if request.topics and len(request.topics) > 0:
+            topics = request.topics
+        else:
+            if not topics_data:
+                raise HTTPException(status_code=404, detail="No topics found for the specified unit range")
+            topics = [f"{t['topic_name']} (Unit {t['unit_number']})" for t in topics_data]
+
         # Determine the safe subject code for RAG
         if subject_record:
             raw_id = subject_record['subject_id']
             safe_subject_code = "".join(c if c.isalnum() or c in "-_" else "_" for c in raw_id)
         else:
             safe_subject_code = str(subject_id)
-
-        topics = [f"{t['topic_name']} (Unit {t['unit_number']})" for t in topics_data]
         
         # RAG INTEGRATION: Sync files to Qdrant and retrieve context
         try:
@@ -849,20 +852,26 @@ async def generate_all_questions(subject_id: int, requests: List[QuestionGenerat
         tasks_inputs = []
 
         for request in requests:
-            query = f"""
-                SELECT t.topic_name, u.unit_number, u.unit_title
-                FROM topics t
-                JOIN units u ON t.unit_id = u.id
-                WHERE u.subject_id = {placeholder} AND u.unit_number BETWEEN {placeholder} AND {placeholder}
-                ORDER BY u.unit_number
-            """
-            cursor.execute(query, (subject_id, request.from_unit, request.to_unit))
-            topics_data = cursor.fetchall()
-
-            if topics_data:
-                # Extract topic names from the query result
-                topics = [dict(row)['topic_name'] for row in topics_data]
-
+            # Determine topics for this request
+            if request.topics and len(request.topics) > 0:
+                topics = request.topics
+            else:
+                query = f"""
+                    SELECT t.topic_name, u.unit_number, u.unit_title
+                    FROM topics t
+                    JOIN units u ON t.unit_id = u.id
+                    WHERE u.subject_id = {placeholder} AND u.unit_number BETWEEN {placeholder} AND {placeholder}
+                    ORDER BY u.unit_number
+                """
+                cursor.execute(query, (subject_id, request.from_unit, request.to_unit))
+                topics_data = cursor.fetchall()
+                if topics_data:
+                    topics = [dict(row)['topic_name'] for row in topics_data]
+                else:
+                    topics = []
+            
+            if topics:
+                
                 # RAG INTEGRATION: Try to get context for each part
                 context_str = None
                 try:

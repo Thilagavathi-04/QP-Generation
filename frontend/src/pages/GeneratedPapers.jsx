@@ -6,6 +6,7 @@ const GeneratedPapers = () => {
   const [papers, setPapers] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  
 
   useEffect(() => {
     fetchPapers()
