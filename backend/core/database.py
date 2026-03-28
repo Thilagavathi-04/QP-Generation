@@ -153,6 +153,16 @@ def migrate_database():
             print("Added column course_outcome_file to subjects table.")
         except:
             pass
+
+        # Add blooms_level to questions
+        try:
+            if db_type == 'sqlite':
+                cursor.execute("ALTER TABLE questions ADD COLUMN blooms_level TEXT")
+            else:
+                cursor.execute("ALTER TABLE questions ADD COLUMN blooms_level VARCHAR(100)")
+            print("Added column blooms_level to questions table.")
+        except:
+            pass
         
         connection.commit()
         cursor.close()
@@ -253,6 +263,7 @@ def init_database():
                     topic TEXT,
                     difficulty TEXT,
                     marks REAL,
+                    blooms_level TEXT,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (question_bank_id) REFERENCES question_banks(id) ON DELETE CASCADE,
                     FOREIGN KEY (subject_id) REFERENCES subjects(id) ON DELETE CASCADE
@@ -449,6 +460,7 @@ def init_database():
                     topic VARCHAR(255),
                     difficulty VARCHAR(50),
                     marks DECIMAL(5,2),
+                    blooms_level VARCHAR(100),
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (question_bank_id) REFERENCES question_banks(id) ON DELETE CASCADE,
                     FOREIGN KEY (subject_id) REFERENCES subjects(id) ON DELETE CASCADE

@@ -145,6 +145,36 @@ const QuestionPaperGeneration = () => {
     }
   }
 
+  const loadCourseOutcomeAsset = async (subject) => {
+    if (!subject?.course_outcome_file) return null
+
+    const filename = subject.course_outcome_file.split('/').pop() || 'course_outcome'
+    const ext = filename.split('.').pop()?.toLowerCase()
+    const isImage = ['png', 'jpg', 'jpeg'].includes(ext)
+
+    try {
+      const response = await api.get(`/api/subjects/${subject.id}/course-outcome-file`, {
+        responseType: 'blob'
+      })
+
+      if (!isImage) {
+        return { type: 'file', filename }
+      }
+
+      const dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => resolve(reader.result)
+        reader.onerror = reject
+        reader.readAsDataURL(response.data)
+      })
+
+      return { type: 'image', filename, dataUrl, ext }
+    } catch (error) {
+      console.warn('Failed to load course outcome file:', error)
+      return { type: 'file', filename }
+    }
+  }
+
   const generatePDF = async (papers, filename) => {
     const [{ jsPDF }] = await Promise.all([
       import('jspdf'),
@@ -154,6 +184,7 @@ const QuestionPaperGeneration = () => {
     const doc = new jsPDF()
     const selectedSubject = subjects.find(s => s.id === parseInt(formData.subjectId))
     const examDate = formData.examDate ? new Date(formData.examDate).toLocaleDateString() : new Date().toLocaleDateString()
+    const courseOutcomeAsset = await loadCourseOutcomeAsset(selectedSubject)
 
     papers.forEach((paper, paperIndex) => {
       if (paperIndex > 0) doc.addPage()
@@ -240,6 +271,34 @@ const QuestionPaperGeneration = () => {
         yPos += 5
       })
       
+      // Course Outcomes (if available)
+      if (courseOutcomeAsset) {
+        if (yPos > 260) { doc.addPage(); yPos = 20 }
+        doc.setFont('helvetica', 'bold')
+        doc.setFontSize(11)
+        doc.text('Course Outcomes', 15, yPos)
+        yPos += 6
+
+        if (courseOutcomeAsset.type === 'image' && courseOutcomeAsset.dataUrl) {
+          const imgType = courseOutcomeAsset.ext === 'png' ? 'PNG' : 'JPEG'
+          const imgProps = doc.getImageProperties(courseOutcomeAsset.dataUrl)
+          const maxWidth = 180
+          const scale = imgProps?.width ? maxWidth / imgProps.width : 1
+          const imgWidth = imgProps?.width ? imgProps.width * scale : maxWidth
+          const imgHeight = imgProps?.height ? imgProps.height * scale : 60
+
+          if (yPos + imgHeight > 280) { doc.addPage(); yPos = 20 }
+          doc.addImage(courseOutcomeAsset.dataUrl, imgType, 15, yPos, imgWidth, imgHeight)
+          yPos += imgHeight + 6
+        } else {
+          doc.setFont('helvetica', 'normal')
+          doc.setFontSize(10)
+          const lines = doc.splitTextToSize(`Course outcome file: ${courseOutcomeAsset.filename}`, 180)
+          doc.text(lines, 15, yPos)
+          yPos += (lines.length * 5) + 2
+        }
+      }
+
       // Footer
       if (yPos > 280) { doc.addPage(); yPos = 20 }
       doc.line(10, yPos, 200, yPos)
@@ -305,7 +364,8 @@ const QuestionPaperGeneration = () => {
                 marks: q.marks,
                 topic: q.topic,
                 unit: q.unit,
-                difficulty: q.difficulty
+                difficulty: q.difficulty,
+                blooms_level: q.bloomsLevel || null
               }))
             }))
           }
@@ -430,7 +490,8 @@ const QuestionPaperGeneration = () => {
               unit: q.unit,
               topic: q.topic,
               difficulty: q.difficulty,
-              marks: q.marks
+              marks: q.marks,
+              bloomsLevel: q.blooms_level || q.bloomsLevel || null
             }))
           })
         }
