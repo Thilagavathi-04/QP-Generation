@@ -204,8 +204,8 @@ const QuestionGeneration = () => {
         difficulty: parts[partIndex].difficulty,
         part_name: parts[partIndex].name,
         ai_provider: aiProvider,
-        topics: selectedTopicNames.length > 0 ? selectedTopicNames : null
-        plan,
+        topics: selectedTopicNames.length > 0 ? selectedTopicNames : nullplan,
+        plan: parts[partIndex].plan && parts[partIndex].plan.length > 0 ? parts[partIndex].plan : undefined,
       })
 
       if (response.data.success) {
