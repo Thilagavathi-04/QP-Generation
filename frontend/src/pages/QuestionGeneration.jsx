@@ -10,6 +10,7 @@ const QuestionGeneration = () => {
   const [subject, setSubject] = useState(null)
   const [units, setUnits] = useState([])
   const [topics, setTopics] = useState([])
+  const [removedTopicIds, setRemovedTopicIds] = useState(() => new Set())
   const [existingBanks, setExistingBanks] = useState([])
   const [modalState, setModalState] = useState({ isOpen: false, type: '', data: null })
   const [currentPart, setCurrentPart] = useState(0)
@@ -203,8 +204,8 @@ const QuestionGeneration = () => {
         difficulty: parts[partIndex].difficulty,
         part_name: parts[partIndex].name,
         ai_provider: aiProvider,
-        topics: selectedTopicNames.length > 0 ? selectedTopicNames : null
-        plan,
+        topics: selectedTopicNames.length > 0 ? selectedTopicNames : nullplan,
+        plan: parts[partIndex].plan && parts[partIndex].plan.length > 0 ? parts[partIndex].plan : undefined,
       })
 
       if (response.data.success) {
@@ -346,7 +347,8 @@ const QuestionGeneration = () => {
           unit: q.unit ? String(q.unit) : "",
           topic: q.topic ? String(q.topic) : "",
           difficulty: q.difficulty ? String(q.difficulty) : "medium",
-          marks: q.marks ? parseFloat(q.marks) : 0
+          marks: q.marks ? parseFloat(q.marks) : 0,
+          blooms_level: q.bloomsLevel ? String(q.bloomsLevel) : null
         })
       })
     })
@@ -528,8 +530,17 @@ const QuestionGeneration = () => {
   }
 
   const removeTopic = (topicId) => {
-    setTopics(prev => prev.filter(t => t.id !== topicId))
-    showToast('Topic removed', 'success')
+    const isRemoved = removedTopicIds.has(topicId)
+    setRemovedTopicIds(prev => {
+      const next = new Set(prev)
+      if (isRemoved) {
+        next.delete(topicId)
+      } else {
+        next.add(topicId)
+      }
+      return next
+    })
+    showToast(isRemoved ? 'Topic restored' : 'Topic removed', 'success')
   }
 
   const addManualTopic = (unitNumber, topicName) => {
@@ -538,13 +549,22 @@ const QuestionGeneration = () => {
       return
     }
 
-    const exists = topics.some(t =>
+    const existingTopic = topics.find(t =>
       t.topic_name.toLowerCase() === topicName.trim().toLowerCase() &&
       t.unit_number === parseInt(unitNumber)
     )
 
-    if (exists) {
-      showToast('This topic already exists', 'warning')
+    if (existingTopic) {
+      if (removedTopicIds.has(existingTopic.id)) {
+        setRemovedTopicIds(prev => {
+          const next = new Set(prev)
+          next.delete(existingTopic.id)
+          return next
+        })
+        showToast('Topic restored', 'success')
+      } else {
+        showToast('This topic already exists', 'warning')
+      }
       return
     }
 
@@ -659,26 +679,15 @@ const QuestionGeneration = () => {
 
         {topics.length > 0 && (
           <div style={{ marginTop: '1rem', padding: '1rem', backgroundColor: '#f8f9fa', borderRadius: '4px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+            <div style={{ display: 'flex', justifyContent: 'flex-start', alignItems: 'center', marginBottom: '0.5rem' }}>
               <h4 style={{ margin: 0, fontSize: '0.875rem', color: 'var(--secondary-600)' }}>
                 Topics to be covered ({topics.length} topics):
               </h4>
-              <button
-                onClick={() => setModalState({
-                  isOpen: true,
-                  type: 'custom',
-                  title: 'Add Topic Manually',
-                  data: { unitNumber: '', topicName: '' }
-                })}
-                className="btn btn-sm btn-outline"
-                style={{ padding: '0.25rem 0.5rem', fontSize: '0.75rem' }}
-              >
-                <Plus size={14} style={{ marginRight: '0.25rem' }} />
-                Add Topic
-              </button>
             </div>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
-              {topics.map(topic => (
+              {topics.map(topic => {
+                const isRemoved = removedTopicIds.has(topic.id)
+                return (
                 <span
                   key={topic.id}
                   style={{
@@ -715,7 +724,8 @@ const QuestionGeneration = () => {
                     {topic.deselected ? '+' : '×'}
                   </button>
                 </span>
-              ))}
+                )
+              })}
             </div>
           </div>
         )}

@@ -422,6 +422,55 @@ async def upload_subject_course_outcome(
             connection.close()
         raise HTTPException(status_code=500, detail=f"Error uploading course outcome: {str(e)}")
 
+
+@app.get("/api/subjects/{subject_id}/course-outcome-file")
+async def download_subject_course_outcome(subject_id: int):
+    """Download the course outcome file for a subject"""
+    connection = get_db_connection()
+    if not connection:
+        raise HTTPException(status_code=500, detail="Database connection failed")
+
+    try:
+        cursor = get_cursor(connection)
+        placeholder = get_placeholder()
+        cursor.execute(
+            f"SELECT course_outcome_file FROM subjects WHERE id = {placeholder}",
+            (subject_id,),
+        )
+        subject = cursor.fetchone()
+
+        cursor.close()
+        connection.close()
+
+        if not subject:
+            raise HTTPException(status_code=404, detail="Subject not found")
+
+        course_outcome_file = subject.get("course_outcome_file")
+        if not course_outcome_file or not os.path.exists(course_outcome_file):
+            raise HTTPException(status_code=404, detail="Course outcome file not found")
+
+        ext = os.path.splitext(course_outcome_file)[1].lower()
+        if ext in [".png", ".jpg", ".jpeg"]:
+            media_type = "image/png" if ext == ".png" else "image/jpeg"
+        elif ext == ".pdf":
+            media_type = "application/pdf"
+        elif ext in [".doc", ".docx"]:
+            media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        else:
+            media_type = "application/octet-stream"
+
+        return FileResponse(
+            path=course_outcome_file,
+            media_type=media_type,
+            filename=os.path.basename(course_outcome_file),
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        if connection:
+            connection.close()
+        raise HTTPException(status_code=500, detail=f"Error downloading course outcome: {str(e)}")
+
 @app.put("/api/subjects/{subject_id}", response_model=SubjectResponse)
 async def update_subject(subject_id: int, subject: SubjectUpdate):
     """Update a subject"""
@@ -1202,8 +1251,8 @@ async def create_questions_batch(questions: List[QuestionCreate]):
         question_ids = []
         for question in questions:
             query = f"""
-                INSERT INTO questions (question_bank_id, subject_id, content, part, unit, topic, difficulty, marks)
-                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})
+                INSERT INTO questions (question_bank_id, subject_id, content, part, unit, topic, difficulty, marks, blooms_level)
+                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})
             """
             values = (
                 question.question_bank_id,
@@ -1213,7 +1262,8 @@ async def create_questions_batch(questions: List[QuestionCreate]):
                 question.unit,
                 question.topic,
                 question.difficulty,
-                question.marks
+                question.marks,
+                question.blooms_level
             )
             cursor.execute(query, values)
             question_ids.append(cursor.lastrowid)
@@ -1262,8 +1312,8 @@ async def create_question(question: QuestionCreate):
             raise HTTPException(status_code=404, detail="Subject not found")
         
         query = f"""
-            INSERT INTO questions (subject_id, content, part, unit, topic, difficulty, marks)
-            VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})
+            INSERT INTO questions (subject_id, content, part, unit, topic, difficulty, marks, blooms_level)
+            VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})
         """
         values = (
             question.subject_id,
@@ -1272,7 +1322,8 @@ async def create_question(question: QuestionCreate):
             question.unit,
             question.topic,
             question.difficulty,
-            question.marks
+            question.marks,
+            question.blooms_level
         )
         cursor.execute(query, values)
         connection.commit()

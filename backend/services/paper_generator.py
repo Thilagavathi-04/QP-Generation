@@ -65,6 +65,29 @@ def _blooms_code_from_marks(marks: float) -> str:
     return "C"
 
 
+def _blooms_code_from_level(level: str | None) -> str | None:
+    if not level:
+        return None
+
+    normalized = str(level).strip().lower()
+    if not normalized:
+        return None
+
+    level_map = {
+        "remember": "R",
+        "understand": "U",
+        "apply": "A",
+        "analyze": "AN",
+        "analyse": "AN",
+        "evaluate": "E",
+        "create": "C",
+    }
+
+    # If multiple levels are provided, take the first one for mapping.
+    first_level = normalized.split(",")[0].strip()
+    return level_map.get(first_level)
+
+
 def _build_blooms_mapping(blueprint: Dict[str, Any], questions_by_part: Dict[str, List[Dict[str, Any]]]) -> Dict[str, Dict[str, Any]]:
     mapping = {
         code: {"questions": [], "marks": 0.0, "label": BLOOMS_LABEL[code]}
@@ -79,7 +102,7 @@ def _build_blooms_mapping(blueprint: Dict[str, Any], questions_by_part: Dict[str
 
         for q in part_questions:
             q_marks = float(q.get('marks') or part_marks)
-            code = _blooms_code_from_marks(q_marks)
+            code = _blooms_code_from_level(q.get('blooms_level')) or _blooms_code_from_marks(q_marks)
             mapping[code]["questions"].append(question_number)
             mapping[code]["marks"] += q_marks
             question_number += 1
@@ -213,6 +236,124 @@ def _resolve_course_outcome_image(course_outcome_file: str) -> tuple[str | None,
             return None, None
 
     return None, None
+
+
+def _extract_course_outcomes(course_outcome_file: str) -> List[tuple[str, str]]:
+    if not course_outcome_file:
+        return []
+
+    source = Path(course_outcome_file)
+    if not source.exists():
+        return []
+
+    ext = source.suffix.lower()
+    rows: List[tuple[str, str]] = []
+
+    def add_row(code: str, desc: str) -> None:
+        cleaned = (desc or "").strip()
+        if not cleaned:
+            return
+        rows.append((code.strip(), cleaned))
+
+    stop_terms = [
+        "TEXT BOOKS",
+        "REFERENCE BOOKS",
+        "REFERENCES",
+        "UNIT ",
+        "COURSE OBJECTIVES",
+        "LAB COMPONENTS",
+        "LABORATORY",
+        "ADVANCED DATA STRUCTURES",
+    ]
+
+    def is_stop_line(text: str) -> bool:
+        upper = text.upper()
+        return any(term in upper for term in stop_terms)
+
+    def slice_course_outcome_lines(lines: List[str]) -> List[str]:
+        start_idx = None
+        for idx, raw in enumerate(lines):
+            upper = (raw or "").upper()
+            if "COURSE OUTCOMES" in upper or re.match(r"^CO\s*\d+", upper):
+                start_idx = idx
+                break
+
+        if start_idx is None:
+            return lines
+
+        sliced = []
+        for raw in lines[start_idx:]:
+            if is_stop_line(raw):
+                break
+            sliced.append(raw)
+        return sliced
+
+    def parse_lines(lines: List[str]) -> None:
+        lines = slice_course_outcome_lines(lines)
+        current_code = None
+        current_desc: List[str] = []
+
+        for raw in lines:
+            line = (raw or "").strip()
+            if not line:
+                continue
+
+            if is_stop_line(line):
+                if current_code and current_desc:
+                    add_row(current_code, " ".join(current_desc))
+                return
+
+            match = re.match(r"^(CO\s*\d+)\s*[:\-\)]?\s*(.*)$", line, re.IGNORECASE)
+            if match:
+                if current_code and current_desc:
+                    add_row(current_code, " ".join(current_desc))
+                current_code = match.group(1).upper().replace(" ", "")
+                current_desc = [match.group(2).strip()] if match.group(2).strip() else []
+                continue
+
+            if current_code:
+                current_desc.append(line)
+
+        if current_code and current_desc:
+            add_row(current_code, " ".join(current_desc))
+
+    try:
+        if ext in {".docx", ".doc"}:
+            doc = Document(str(source))
+            for table in doc.tables:
+                for row in table.rows:
+                    cells = [c.text.strip() for c in row.cells]
+                    if not cells or not cells[0]:
+                        continue
+                    if re.match(r"^CO\s*\d+$", cells[0], re.IGNORECASE):
+                        add_row(cells[0].upper().replace(" ", ""), " ".join(cells[1:]))
+            if rows:
+                return rows
+
+            para_lines = [p.text for p in doc.paragraphs if p.text.strip()]
+            parse_lines(para_lines)
+            return rows
+
+        if ext == ".pdf":
+            try:
+                import fitz  # PyMuPDF
+            except Exception:
+                return []
+
+            pdf_doc = fitz.open(str(source))
+            text_lines: List[str] = []
+            for page_index in range(min(pdf_doc.page_count, 5)):
+                page = pdf_doc.load_page(page_index)
+                text = page.get_text("text")
+                text_lines.extend(text.splitlines())
+            pdf_doc.close()
+
+            parse_lines(text_lines)
+            return rows
+    except Exception:
+        return []
+
+    return rows
 
 
 def load_blueprint(blueprint_path: str) -> Dict[str, Any]:
@@ -501,6 +642,37 @@ def generate_docx_paper(
             question_number += 1
             doc.add_paragraph()
 
+    co_rows = _extract_course_outcomes(course_outcome_file)
+    co_image_path = None
+    co_temp_cleanup = None
+    if course_outcome_file and Path(course_outcome_file).exists():
+        co_image_path, co_temp_cleanup = _resolve_course_outcome_image(course_outcome_file)
+
+    # Course outcomes section (always show header)
+    doc.add_paragraph()
+    co_heading = doc.add_paragraph()
+    co_heading.add_run("Course Outcomes").bold = True
+    if co_rows:
+        co_table = doc.add_table(rows=1, cols=2)
+        co_table.style = 'Table Grid'
+        header_cells = co_table.rows[0].cells
+        header_cells[0].text = 'CO'
+        header_cells[1].text = 'Course Outcome'
+        for code, desc in co_rows:
+            row_cells = co_table.add_row().cells
+            row_cells[0].text = code
+            row_cells[1].text = desc
+    elif course_outcome_file and Path(course_outcome_file).exists():
+        if co_image_path:
+            try:
+                doc.add_picture(co_image_path, width=Inches(6.3))
+            except Exception:
+                doc.add_paragraph(f"Course outcome file uploaded at: {course_outcome_file}")
+        else:
+            doc.add_paragraph(f"Course outcome file uploaded at: {course_outcome_file}")
+    else:
+        doc.add_paragraph("Course outcome file not available.")
+
     blooms_mapping = _build_blooms_mapping(blueprint, questions_by_part)
     doc.add_paragraph()
     blooms_heading = doc.add_paragraph()
@@ -520,24 +692,6 @@ def generate_docx_paper(
         row[1].text = blooms_mapping[code]["label"]
         row[2].text = ",".join(str(n) for n in blooms_mapping[code]["questions"])
         row[3].text = f"{blooms_mapping[code]['marks']:.1f}" if blooms_mapping[code]["marks"] else ""
-    
-    co_image_path = None
-    co_temp_cleanup = None
-    if course_outcome_file and Path(course_outcome_file).exists():
-        co_image_path, co_temp_cleanup = _resolve_course_outcome_image(course_outcome_file)
-
-    # Footer
-    if course_outcome_file and Path(course_outcome_file).exists():
-        doc.add_paragraph()
-        co_heading = doc.add_paragraph()
-        co_heading.add_run("Course Outcomes").bold = True
-        if co_image_path:
-            try:
-                doc.add_picture(co_image_path, width=Inches(6.3))
-            except Exception:
-                doc.add_paragraph(f"Course outcome file uploaded at: {course_outcome_file}")
-        else:
-            doc.add_paragraph(f"Course outcome file uploaded at: {course_outcome_file}")
 
     doc.add_paragraph("_" * 80)
     footer = doc.add_paragraph()
@@ -629,6 +783,15 @@ def generate_pdf_paper(
         fontName='Helvetica-Bold',
         spaceAfter=4,
         leading=14
+    )
+
+    heading_style = ParagraphStyle(
+        'SectionHeading',
+        parent=styles['Heading3'],
+        fontSize=11,
+        fontName='Helvetica-Bold',
+        spaceAfter=4,
+        leading=12
     )
     
     normal_style = styles['Normal']
@@ -784,6 +947,39 @@ def generate_pdf_paper(
         
         elements.append(Spacer(1, 0.2*inch))
 
+    # Course outcomes section (always show header)
+    co_rows = _extract_course_outcomes(course_outcome_file)
+    elements.append(Spacer(1, 0.2*inch))
+    elements.append(Paragraph("<b>Course Outcomes</b>", heading_style))
+    if co_rows:
+        co_table_data = [["CO", "Course Outcome"]]
+        for code, desc in co_rows:
+            co_table_data.append([code, Paragraph(desc, normal_style)])
+        co_table = Table(co_table_data, colWidths=[0.6*inch, 5.9*inch])
+        co_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('ALIGN', (0, 0), (0, -1), 'CENTER'),
+        ]))
+        elements.append(co_table)
+    elif course_outcome_file and Path(course_outcome_file).exists():
+        if co_image_path:
+            try:
+                img_reader = ImageReader(co_image_path)
+                img_w, img_h = img_reader.getSize()
+                max_w = 6.5 * inch
+                ratio = max_w / float(img_w) if img_w else 1
+                img = RLImage(co_image_path, width=max_w, height=float(img_h) * ratio)
+                elements.append(img)
+            except Exception:
+                elements.append(Paragraph(f"Course outcome file uploaded at: {course_outcome_file}", normal_style))
+        else:
+            elements.append(Paragraph(f"Course outcome file uploaded at: {course_outcome_file}", normal_style))
+    else:
+        elements.append(Paragraph("Course outcome file not available.", normal_style))
+
     blooms_mapping = _build_blooms_mapping(blueprint, questions_by_part)
     elements.append(Spacer(1, 0.2*inch))
     elements.append(Paragraph("<b>Question Blooms Taxonomy Mapping</b>", heading_style))
@@ -807,23 +1003,6 @@ def generate_pdf_paper(
         ('ALIGN', (3, 0), (3, -1), 'CENTER'),
     ]))
     elements.append(mapping_table)
-    
-    # Course outcomes section (if uploaded)
-    if course_outcome_file and Path(course_outcome_file).exists():
-        elements.append(Spacer(1, 0.2*inch))
-        elements.append(Paragraph("<b>Course Outcomes</b>", heading_style))
-        if co_image_path:
-            try:
-                img_reader = ImageReader(co_image_path)
-                img_w, img_h = img_reader.getSize()
-                max_w = 6.5 * inch
-                ratio = max_w / float(img_w) if img_w else 1
-                img = RLImage(co_image_path, width=max_w, height=float(img_h) * ratio)
-                elements.append(img)
-            except Exception:
-                elements.append(Paragraph(f"Course outcome file uploaded at: {course_outcome_file}", normal_style))
-        else:
-            elements.append(Paragraph(f"Course outcome file uploaded at: {course_outcome_file}", normal_style))
 
     # Footer
     elements.append(Paragraph("_" * 100, normal_style))
