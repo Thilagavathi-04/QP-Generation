@@ -399,26 +399,56 @@ const QuestionBank = () => {
         <div className="form-row">
           <div className="form-group" style={{ flex: 2 }}>
             <label className="form-label">Search Questions</label>
-            <div style={{ position: 'relative' }}>
+            <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
               <input
                 type="text"
                 className="form-input"
                 placeholder="Search by content, topic, or unit..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                style={{ paddingLeft: '3rem' }}
+                style={{ 
+                  paddingLeft: '3rem',
+                  paddingRight: searchTerm ? '3rem' : '1rem',
+                  transition: 'all 0.2s ease'
+                }}
+                title="Search by question content, topic, or unit number"
               />
               <Search
                 size={20}
                 style={{
                   position: 'absolute',
                   left: '1rem',
-                  top: '50%',
-                  transform: 'translateY(-50%)',
-                  color: '#666'
+                  color: '#666',
+                  pointerEvents: 'none'
                 }}
               />
+              {searchTerm && (
+                <button
+                  onClick={() => setSearchTerm('')}
+                  style={{
+                    position: 'absolute',
+                    right: '1rem',
+                    background: 'none',
+                    border: 'none',
+                    fontSize: '1.2rem',
+                    color: '#999',
+                    cursor: 'pointer',
+                    padding: '0.5rem',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center'
+                  }}
+                  title="Clear search"
+                >
+                  ✕
+                </button>
+              )}
             </div>
+            {searchTerm && (
+              <p style={{ fontSize: '0.75rem', color: '#666', marginTop: '0.5rem' }}>
+                Found {filteredQuestions.length} of {questions.length} questions
+              </p>
+            )}
           </div>
 
           <div className="form-group">
@@ -476,6 +506,34 @@ const QuestionBank = () => {
               ))}
             </select>
           </div>
+
+          {(searchTerm || filters.part !== 'all' || filters.unit !== 'all' || filters.difficulty !== 'all' || filters.marks !== 'all') && (
+            <div className="form-group" style={{ display: 'flex', alignItems: 'flex-end' }}>
+              <button
+                onClick={() => {
+                  setSearchTerm('')
+                  setFilters({ part: 'all', unit: 'all', difficulty: 'all', marks: 'all' })
+                }}
+                style={{
+                  background: 'var(--secondary-500)',
+                  color: 'white',
+                  border: 'none',
+                  padding: '0.75rem 1.5rem',
+                  borderRadius: '8px',
+                  cursor: 'pointer',
+                  fontSize: '0.875rem',
+                  fontWeight: '600',
+                  transition: 'all 0.2s ease',
+                  width: '100%'
+                }}
+                onMouseOver={(e) => e.target.style.background = 'var(--secondary-600)'}
+                onMouseOut={(e) => e.target.style.background = 'var(--secondary-500)'}
+                title="Clear all search and filters"
+              >
+                ↻ Clear All Filters
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
@@ -486,7 +544,29 @@ const QuestionBank = () => {
           <div style={{ textAlign: 'center', padding: '3rem', color: '#666' }}>
             <Search size={48} style={{ color: '#ccc', marginBottom: '1rem' }} />
             <h3>No questions found</h3>
+            {searchTerm && (
+              <p>No results for "<strong>{searchTerm}</strong>"</p>
+            )}
             <p>Try adjusting your search criteria or filters</p>
+            {(searchTerm || filters.part !== 'all' || filters.unit !== 'all' || filters.difficulty !== 'all' || filters.marks !== 'all') && (
+              <button
+                onClick={() => {
+                  setSearchTerm('')
+                  setFilters({ part: 'all', unit: 'all', difficulty: 'all', marks: 'all' })
+                }}
+                style={{
+                  background: 'var(--primary-500)',
+                  color: 'white',
+                  border: 'none',
+                  padding: '0.5rem 1rem',
+                  borderRadius: '6px',
+                  cursor: 'pointer',
+                  marginTop: '1rem'
+                }}
+              >
+                Clear All Filters
+              </button>
+            )}
           </div>
         ) : (
           filteredQuestions.map((question, index) => {

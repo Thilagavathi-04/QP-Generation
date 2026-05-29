@@ -33,13 +33,6 @@ const Sidebar = () => {
             ]
         },
         {
-            title: 'Course Content',
-            items: [
-                { path: '/subjects', label: 'Subjects', icon: BookOpen },
-                { path: '/question-bank', label: 'Question Bank', icon: Database },
-            ]
-        },
-        {
             title: 'Assessment',
             items: [
                 { path: '/generate-paper', label: 'Question paper generation', icon: FileOutput },
@@ -54,9 +47,18 @@ const Sidebar = () => {
         }
     ]
 
-    // Only show Blueprints to Admins
+    // Only show Course Content and Blueprints to Admins
     if (isAdmin) {
-        // Find Assessment group and add Blueprints back or add a new System group
+        // Add Course Content for admins only
+        navGroups.splice(1, 0, {
+            title: 'Course Content',
+            items: [
+                { path: '/subjects', label: 'Subjects', icon: BookOpen },
+                { path: '/question-bank', label: 'Question Bank', icon: Database },
+            ]
+        });
+
+        // Find Assessment group and add Blueprints
         const assessmentGroup = navGroups.find(g => g.title === 'Assessment');
         if (assessmentGroup) {
             assessmentGroup.items.unshift({ path: '/blueprints', label: 'Blueprints', icon: Layout });
@@ -148,10 +150,10 @@ const Sidebar = () => {
                             fontWeight: 'bold',
                             color: 'white'
                         }}>
-                            {userData?.Name?.charAt(0) || 'U'}
+                            {userData?.name?.charAt(0) || userData?.Name?.charAt(0) || 'U'}
                         </div>
                         <div style={{ overflow: 'hidden' }}>
-                            <p style={{ margin: 0, fontSize: '0.875rem', fontWeight: '600', color: 'white', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{userData?.Name || 'User'}</p>
+                            <p style={{ margin: 0, fontSize: '0.875rem', fontWeight: '600', color: 'white', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{userData?.name || userData?.Name || 'User'}</p>
                             <p style={{ margin: 0, fontSize: '0.75rem', color: 'rgba(255,255,255,0.5)' }}>{userData?.role === 'admin' ? 'Administrator' : 'Faculty'}</p>
                         </div>
                     </div>

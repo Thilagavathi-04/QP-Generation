@@ -1,13 +1,10 @@
 import React, { useState } from 'react';
 import { useAuth } from '../context/useAuth';
-import { db, auth } from '../firebase';
-import { updatePassword } from 'firebase/auth';
-import { doc, updateDoc } from 'firebase/firestore';
 import { User, Mail, Shield, Book, Lock, RefreshCcw, Camera } from 'lucide-react';
 import { showToast } from '../utils/toast';
 
 export default function Profile() {
-  const { user, userData, isAdmin } = useAuth();
+  const { user, userData, isAdmin, token, refreshUser } = useAuth();
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [loading, setLoading] = useState(false);
@@ -23,20 +20,22 @@ export default function Profile() {
 
     setLoading(true);
     try {
-      const currentUser = auth.currentUser;
-      if (currentUser) {
-        await updatePassword(currentUser, newPassword);
-        
-        // Update mustChangePassword flag in Firestore if it exists
-        if (userData?.mustChangePassword) {
-          await updateDoc(doc(db, "users", user.uid), {
-            mustChangePassword: false
-          });
-        }
-        
-        showToast("Password updated successfully!", "success");
-        setNewPassword('');
-        setConfirmPassword('');
+      const currentToken = token || user?.token || localStorage.getItem('qp_token');
+      const response = await fetch('http://127.0.0.1:8010/api/auth/change-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: currentToken, new_password: newPassword }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail || "Failed to update password.");
+      }
+      
+      showToast("Password updated successfully!", "success");
+      setNewPassword('');
+      setConfirmPassword('');
+      if (refreshUser) {
+        await refreshUser();
       }
     } catch (error) {
       console.error(error);

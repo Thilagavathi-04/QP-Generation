@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { UserPlus, User, BookOpen, Trash } from 'lucide-react';
-import { db, secondaryAuth } from '../firebase';
-import { createUserWithEmailAndPassword } from 'firebase/auth';
-import { collection, doc, setDoc, getDocs } from 'firebase/firestore';
+import axios from 'axios';
 import { showToast } from '../utils/toast';
+
+const API_BASE = 'http://127.0.0.1:8010';
 
 export default function AdminProfile() {
   const [facultyName, setFacultyName] = useState('');
@@ -19,10 +19,8 @@ export default function AdminProfile() {
 
   async function fetchUsers() {
     try {
-      const usersCol = collection(db, 'users');
-      const snapshot = await getDocs(usersCol);
-      const usersList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      setUsers(usersList);
+      const response = await axios.get(`${API_BASE}/api/admin/users`);
+      setUsers(response.data);
     } catch (err) {
       console.error(err);
       showToast('Error loading users', 'error');
@@ -30,10 +28,7 @@ export default function AdminProfile() {
   }
 
   useEffect(() => {
-    const timer = setTimeout(() => {
-      fetchUsers();
-    }, 0);
-    return () => clearTimeout(timer);
+    fetchUsers();
   }, []);
 
   const handleAddCourse = (e) => {
@@ -53,35 +48,35 @@ export default function AdminProfile() {
     e.preventDefault();
     setLoading(true);
     try {
-      // 1. Create User in Firebase Auth using the Secondary App
-      // Hardcoded default password as requested by user
       const defaultPassword = "12345678";
-      const userCredential = await createUserWithEmailAndPassword(secondaryAuth, facultyEmail, defaultPassword);
-      const uid = userCredential.user.uid;
-
-      // 2. Add profile document in Firestore `users` collection matching their database picture
-      await setDoc(doc(db, "users", uid), {
-        Name: facultyName,
+      const payload = {
+        name: facultyName,
         email: facultyEmail,
-        Dept: facultyDept,
-        role: "user", // "user" for faculty
-        courses: courses,
-        mustChangePassword: true, // Flag for first login
-        createdAt: new Date()
-      });
+        department: facultyDept,
+        role: "advisor", // advisor role
+        password: defaultPassword,
+        courses: courses
+      };
 
-      showToast(`Faculty ${facultyName} added successfully! Default password: ${defaultPassword}`, 'success');
-      
-      // Clear form
-      setFacultyName('');
-      setFacultyEmail('');
-      setFacultyDept('');
-      setCourses([]);
-      
-      fetchUsers();
+      const res = await axios.post(`${API_BASE}/api/auth/create-user`, payload);
+
+      if (res.data && res.data.success) {
+        showToast(`Faculty ${facultyName} added successfully! Default password: ${defaultPassword}`, 'success');
+        
+        // Clear form
+        setFacultyName('');
+        setFacultyEmail('');
+        setFacultyDept('');
+        setCourses([]);
+        
+        fetchUsers();
+      } else {
+        showToast(res.data.message || 'Error creating faculty account', 'error');
+      }
     } catch (error) {
       console.error(error);
-      showToast(error.message || 'Error creating faculty account', 'error');
+      const errMsg = error.response?.data?.detail || 'Error creating faculty account';
+      showToast(errMsg, 'error');
     }
     setLoading(false);
   };
@@ -184,10 +179,10 @@ export default function AdminProfile() {
                 <div key={user.id} style={{ padding: '1rem', background: 'white', borderRadius: '8px', border: '1px solid var(--secondary-200)', boxShadow: '0 1px 2px rgba(0,0,0,0.05)' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.5rem' }}>
                     <div>
-                      <strong style={{ fontSize: '1.1rem', color: 'var(--primary-800)' }}>{user.Name || 'Unknown'}</strong>
+                      <strong style={{ fontSize: '1.1rem', color: 'var(--primary-800)' }}>{user.name || user.Name || 'Unknown'}</strong>
                       {user.role === 'admin' && <span style={{ marginLeft: '0.5rem', fontSize: '0.7rem', padding: '2px 6px', background: 'var(--danger-100)', color: 'var(--danger-700)', borderRadius: '4px' }}>ADMIN</span>}
                     </div>
-                    <span style={{ fontSize: '0.85rem', color: 'var(--primary-600)', background: 'var(--primary-100)', padding: '2px 8px', borderRadius: '12px' }}>{user.Dept || 'N/A'}</span>
+                    <span style={{ fontSize: '0.85rem', color: 'var(--primary-600)', background: 'var(--primary-100)', padding: '2px 8px', borderRadius: '12px' }}>{user.department || user.Dept || 'N/A'}</span>
                   </div>
                   <div style={{ color: 'var(--secondary-500)', fontSize: '0.9rem', marginBottom: '0.75rem' }}>{user.email}</div>
                   

@@ -13,6 +13,8 @@ import sqlite3
 import re
 import tempfile
 import time
+import hashlib
+import base64
 from pathlib import Path
 
 from email.message import EmailMessage
@@ -110,69 +112,229 @@ async def startup_event():
     print("SYSTEM: Auth Routes are fully loaded and active.")
     print("--------------------------------------------------")
 
-# In-memory OTP storage
-otp_store = {}
-
-# ==================== AUTH ENDPOINTS ====================
-
-
 # ==================== AUTH & ADMIN ENDPOINTS ====================
+
+def _hash_password(password: str) -> str:
+    """SHA-256 hash of password"""
+    return hashlib.sha256(password.encode()).hexdigest()
+
+def _make_token(user_id: int, email: str, role: str) -> str:
+    """Create a simple base64 token encoding user info"""
+    payload = json.dumps({"id": user_id, "email": email, "role": role})
+    return base64.b64encode(payload.encode()).decode()
+
+def _decode_token(token: str) -> dict:
+    """Decode base64 token and return payload dict"""
+    try:
+        payload = base64.b64decode(token.encode()).decode()
+        return json.loads(payload)
+    except Exception:
+        return {}
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+class CreateUserRequest(BaseModel):
+    name: str
+    email: str
+    department: Optional[str] = None
+    role: str = "advisor"  # "admin" or "advisor"
+    password: Optional[str] = "12345678"
+    courses: Optional[List[dict]] = None
+
+class ChangePasswordRequest(BaseModel):
+    token: str
+    new_password: str
 
 class AdminAction(BaseModel):
     user_id: int
-    action: str # "approve" or "reject"
+    action: str  # "approve" or "reject"
 
-class UserStatusRequest(BaseModel):
-    email: str
-    name: str
 
-@app.post("/api/auth/sync-user")
-async def sync_user(request: UserStatusRequest):
-    """Sync user from Firebase to DB and return status"""
+@app.post("/api/auth/login")
+async def login(request: LoginRequest):
+    """Authenticate user against quest_generator.db and return token + user info"""
     connection = get_db_connection()
     if not connection:
         raise HTTPException(status_code=500, detail="Database connection failed")
-    
     try:
         cursor = get_cursor(connection)
         placeholder = get_placeholder()
-        
-        # Check if user exists
-        cursor.execute(f"SELECT * FROM users WHERE email = {placeholder}", (request.email,))
+        cursor.execute(
+            f"SELECT id, email, name, role, department, status, must_change_password, courses FROM users WHERE email = {placeholder}",
+            (request.email.strip().lower(),)
+        )
         user = cursor.fetchone()
-        
-        status_val = "pending"
-        
         if not user:
-            # Create user if new (came from Firebase Signup)
-            cursor.execute(
-                f"INSERT INTO users (email, name, status, last_login) VALUES ({placeholder}, {placeholder}, 'pending', {placeholder})",
-                (request.email, request.name, datetime.now())
-            )
-            connection.commit()
-            status_val = "pending"
-        else:
-            # Update login time
-            cursor.execute(
-                f"UPDATE users SET last_login = {placeholder} WHERE id = {placeholder}",
-                (datetime.now(), user['id'])
-            )
-            connection.commit()
-            status_val = user['status']
-            
+            raise HTTPException(status_code=401, detail="Invalid email or password")
+
+        # Verify password
+        pw_hash = _hash_password(request.password.strip())
+        cursor.execute(
+            f"SELECT id FROM users WHERE email = {placeholder} AND password_hash = {placeholder}",
+            (request.email.strip().lower(), pw_hash)
+        )
+        match = cursor.fetchone()
+        if not match:
+            raise HTTPException(status_code=401, detail="Invalid email or password")
+
+        # Update last login
+        cursor.execute(
+            f"UPDATE users SET last_login = {placeholder} WHERE id = {placeholder}",
+            (datetime.now(), user["id"])
+        )
+        connection.commit()
         cursor.close()
         connection.close()
-        
-        # Admin Bypass: Specific email is always approved
-        if request.email.lower() == "gsrinath222@gmail.com":
-             return {"status": "approved", "role": "admin"}
 
-        return {"status": status_val, "role": "user"}
+        token = _make_token(user["id"], user["email"], user["role"] or "advisor")
         
+        # Parse courses if available
+        try:
+            courses = json.loads(user["courses"]) if user["courses"] else []
+        except (json.JSONDecodeError, TypeError):
+            courses = []
+        
+        return {
+            "success": True,
+            "token": token,
+            "user": {
+                "id": user["id"],
+                "email": user["email"],
+                "name": user["name"],
+                "role": user["role"] or "advisor",
+                "department": user["department"],
+                "must_change_password": bool(user["must_change_password"]),
+                "mustChangePassword": bool(user["must_change_password"]),
+                "courses": courses
+            }
+        }
+    except HTTPException:
+        raise
     except Exception as e:
-        if connection:
-            connection.close()
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        if connection: connection.close()
+        raise HTTPException(status_code=500, detail=f"Login error: {str(e)}")
+
+
+@app.post("/api/auth/create-user")
+async def create_user(request: CreateUserRequest):
+    """Admin creates a new advisor or admin user in the DB"""
+    connection = get_db_connection()
+    if not connection:
+        raise HTTPException(status_code=500, detail="Database connection failed")
+    try:
+        cursor = get_cursor(connection)
+        placeholder = get_placeholder()
+        email = request.email.strip().lower()
+
+        # Check duplicate
+        cursor.execute(f"SELECT id FROM users WHERE email = {placeholder}", (email,))
+        if cursor.fetchone():
+            raise HTTPException(status_code=400, detail="User with this email already exists")
+
+        role = request.role if request.role in ("admin", "advisor") else "advisor"
+        pw_hash = _hash_password(request.password or "12345678")
+        must_change = 1 if (request.password is None or request.password == "12345678") else 0
+        courses_str = json.dumps(request.courses) if request.courses else "[]"
+
+        cursor.execute(
+            f"INSERT INTO users (email, name, role, department, password_hash, status, must_change_password, courses) "
+            f"VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'approved', {placeholder}, {placeholder})",
+            (email, request.name, role, request.department, pw_hash, must_change, courses_str)
+        )
+        connection.commit()
+        new_id = cursor.lastrowid
+        cursor.close()
+        connection.close()
+
+        return {
+            "success": True,
+            "message": f"User {request.name} created with role '{role}'. Default password: 12345678",
+            "user_id": new_id
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        if connection: connection.close()
+        raise HTTPException(status_code=500, detail=f"Error creating user: {str(e)}")
+
+
+@app.post("/api/auth/change-password")
+async def change_password(request: ChangePasswordRequest):
+    """Allow a logged-in user to change their password"""
+    payload = _decode_token(request.token)
+    if not payload or "id" not in payload:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    if len(request.new_password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+
+    connection = get_db_connection()
+    if not connection:
+        raise HTTPException(status_code=500, detail="Database connection failed")
+    try:
+        cursor = get_cursor(connection)
+        placeholder = get_placeholder()
+        pw_hash = _hash_password(request.new_password)
+        cursor.execute(
+            f"UPDATE users SET password_hash = {placeholder}, must_change_password = 0 WHERE id = {placeholder}",
+            (pw_hash, payload["id"])
+        )
+        connection.commit()
+        cursor.close()
+        connection.close()
+        return {"success": True, "message": "Password updated successfully"}
+    except Exception as e:
+        if connection: connection.close()
+        raise HTTPException(status_code=500, detail=f"Error changing password: {str(e)}")
+
+
+@app.get("/api/auth/me")
+async def get_me(token: str):
+    """Return user info from token"""
+    payload = _decode_token(token)
+    if not payload or "id" not in payload:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    connection = get_db_connection()
+    if not connection:
+        raise HTTPException(status_code=500, detail="Database connection failed")
+    try:
+        cursor = get_cursor(connection)
+        placeholder = get_placeholder()
+        cursor.execute(
+            f"SELECT id, email, name, role, department, must_change_password, courses FROM users WHERE id = {placeholder}",
+            (payload["id"],)
+        )
+        user = cursor.fetchone()
+        cursor.close()
+        connection.close()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Parse courses if available
+        try:
+            courses = json.loads(user["courses"]) if user["courses"] else []
+        except (json.JSONDecodeError, TypeError):
+            courses = []
+        
+        return {
+            "id": user["id"],
+            "email": user["email"],
+            "name": user["name"],
+            "role": user["role"] or "advisor",
+            "department": user["department"],
+            "must_change_password": bool(user["must_change_password"]),
+            "mustChangePassword": bool(user["must_change_password"]),
+            "courses": courses
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        if connection: connection.close()
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.get("/api/admin/users")
 async def get_all_users():
@@ -180,20 +342,22 @@ async def get_all_users():
     connection = get_db_connection()
     try:
         cursor = get_cursor(connection)
-        cursor.execute("SELECT id, email, name, status, created_at, last_login FROM users ORDER BY created_at DESC")
+        cursor.execute(
+            "SELECT id, email, name, role, department, status, created_at, last_login, courses FROM users ORDER BY created_at DESC"
+        )
         users = cursor.fetchall()
-        
-        # Convert to list of dicts if sqlite Row objects
         user_list = []
         for u in users:
-             user_list.append(dict(u))
-             
+            ud = dict(u)
+            ud["courses"] = json.loads(ud["courses"]) if ud.get("courses") else []
+            user_list.append(ud)
         cursor.close()
         connection.close()
         return user_list
     except Exception as e:
         if connection: connection.close()
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/api/admin/action")
 async def admin_action(action: AdminAction):
@@ -202,11 +366,9 @@ async def admin_action(action: AdminAction):
     try:
         cursor = get_cursor(connection)
         placeholder = get_placeholder()
-        
         new_status = "approved" if action.action == "approve" else "rejected"
-        
         cursor.execute(
-            f"UPDATE users SET status = {placeholder} WHERE id = {placeholder}", 
+            f"UPDATE users SET status = {placeholder} WHERE id = {placeholder}",
             (new_status, action.user_id)
         )
         connection.commit()
@@ -1491,6 +1653,166 @@ async def delete_question(question_id: int):
         if connection:
             connection.close()
         raise HTTPException(status_code=500, detail=f"Error deleting question: {str(e)}")
+
+# ==================== SEARCH ENDPOINTS ====================
+
+@app.get("/api/search/questions")
+async def search_questions(
+    q: str = "",
+    subject_id: Optional[int] = None,
+    bank_id: Optional[int] = None,
+    difficulty: Optional[str] = None,
+    unit: Optional[str] = None,
+    limit: int = 50
+):
+    """Advanced search for questions with filters"""
+    connection = get_db_connection()
+    if not connection:
+        raise HTTPException(status_code=500, detail="Database connection failed")
+    
+    try:
+        cursor = get_cursor(connection)
+        placeholder = get_placeholder()
+        
+        # Build dynamic query
+        query = "SELECT id, content, unit, topic, difficulty, marks, part, question_bank_id, subject_id, created_at FROM questions WHERE 1=1"
+        params = []
+        
+        # Search term - search in content, topic, and unit
+        if q:
+            query += f" AND (content LIKE {placeholder} OR topic LIKE {placeholder} OR unit LIKE {placeholder})"
+            search_term = f"%{q}%"
+            params.extend([search_term, search_term, search_term])
+        
+        # Subject filter
+        if subject_id:
+            query += f" AND subject_id = {placeholder}"
+            params.append(subject_id)
+        
+        # Bank filter
+        if bank_id:
+            query += f" AND question_bank_id = {placeholder}"
+            params.append(bank_id)
+        
+        # Difficulty filter
+        if difficulty:
+            query += f" AND difficulty = {placeholder}"
+            params.append(difficulty)
+        
+        # Unit filter
+        if unit:
+            query += f" AND unit = {placeholder}"
+            params.append(unit)
+        
+        query += f" ORDER BY created_at DESC LIMIT {placeholder}"
+        params.append(limit)
+        
+        cursor.execute(query, params)
+        results = cursor.fetchall()
+        cursor.close()
+        connection.close()
+        
+        return {
+            "success": True,
+            "count": len(results),
+            "results": [dict(r) for r in results],
+            "query": q,
+            "filters": {
+                "subject_id": subject_id,
+                "bank_id": bank_id,
+                "difficulty": difficulty,
+                "unit": unit
+            }
+        }
+    except Exception as e:
+        if connection:
+            connection.close()
+        raise HTTPException(status_code=500, detail=f"Search error: {str(e)}")
+
+@app.get("/api/search/papers")
+async def search_papers(
+    q: str = "",
+    subject_id: Optional[int] = None,
+    limit: int = 50
+):
+    """Search for question papers"""
+    connection = get_db_connection()
+    if not connection:
+        raise HTTPException(status_code=500, detail="Database connection failed")
+    
+    try:
+        cursor = get_cursor(connection)
+        placeholder = get_placeholder()
+        
+        query = "SELECT id, title, subject_id, exam_type, exam_date, total_marks, generated_at FROM question_papers WHERE 1=1"
+        params = []
+        
+        if q:
+            query += f" AND (title LIKE {placeholder} OR exam_type LIKE {placeholder})"
+            search_term = f"%{q}%"
+            params.extend([search_term, search_term])
+        
+        if subject_id:
+            query += f" AND subject_id = {placeholder}"
+            params.append(subject_id)
+        
+        query += f" ORDER BY generated_at DESC LIMIT {placeholder}"
+        params.append(limit)
+        
+        cursor.execute(query, params)
+        results = cursor.fetchall()
+        cursor.close()
+        connection.close()
+        
+        return {
+            "success": True,
+            "count": len(results),
+            "results": [dict(r) for r in results],
+            "query": q,
+            "filters": {"subject_id": subject_id}
+        }
+    except Exception as e:
+        if connection:
+            connection.close()
+        raise HTTPException(status_code=500, detail=f"Search error: {str(e)}")
+
+@app.get("/api/search/subjects")
+async def search_subjects(q: str = "", limit: int = 50):
+    """Search for subjects"""
+    connection = get_db_connection()
+    if not connection:
+        raise HTTPException(status_code=500, detail="Database connection failed")
+    
+    try:
+        cursor = get_cursor(connection)
+        placeholder = get_placeholder()
+        
+        query = "SELECT id, subject_id, name FROM subjects WHERE 1=1"
+        params = []
+        
+        if q:
+            query += f" AND (name LIKE {placeholder} OR subject_id LIKE {placeholder})"
+            search_term = f"%{q}%"
+            params.extend([search_term, search_term])
+        
+        query += f" ORDER BY name LIMIT {placeholder}"
+        params.append(limit)
+        
+        cursor.execute(query, params)
+        results = cursor.fetchall()
+        cursor.close()
+        connection.close()
+        
+        return {
+            "success": True,
+            "count": len(results),
+            "results": [dict(r) for r in results],
+            "query": q
+        }
+    except Exception as e:
+        if connection:
+            connection.close()
+        raise HTTPException(status_code=500, detail=f"Search error: {str(e)}")
 
 # ==================== BLUEPRINT ENDPOINTS WITH PARTS ====================
 

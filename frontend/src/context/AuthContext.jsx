@@ -1,73 +1,59 @@
-import React, { useEffect, useState } from 'react';
-import { auth, db } from '../firebase';
-import { onAuthStateChanged, signOut } from 'firebase/auth';
-import { collection, doc, getDoc, getDocs, query, where } from 'firebase/firestore';
+import React, { useEffect, useState, useCallback } from 'react';
 import { AuthContext } from './AuthContextObject';
 
-// Emails that should always have admin access, regardless of Firestore role
-const SUPER_ADMIN_EMAILS = ['admin@gmail.com', 'uthilakz@gmail.com'];
+const API_BASE = 'http://127.0.0.1:8010';
 
 export function AuthProvider({ children }) {
-  const [currentUser, setCurrentUser] = useState(null);
-  const [userData, setUserData] = useState(null); // Firestore user doc
+  const [currentUser, setCurrentUser] = useState(null); // { id, email, name, role, department, must_change_password }
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (user) => {
-      setCurrentUser(user);
-      if (user) {
-        try {
-          const docRef = doc(db, 'users', user.uid);
-          const docSnap = await getDoc(docRef);
-          if (docSnap.exists()) {
-            setUserData(docSnap.data());
-          } else {
-            // If no document by UID, try looking up by email (for admins or legacy users)
-            const usersRef = collection(db, 'users');
-            const q = query(usersRef, where('email', '==', user.email));
-            const snapshot = await getDocs(q);
-
-            if (!snapshot.empty) {
-              setUserData(snapshot.docs[0].data());
-            } else {
-              // Final fallback – treat as normal faculty unless email is a configured super admin
-              const isSuperAdmin = user.email && SUPER_ADMIN_EMAILS.includes(user.email);
-              setUserData({
-                role: isSuperAdmin ? 'admin' : 'user',
-                Name: user.displayName || user.email || 'User',
-                email: user.email || ''
-              });
-            }
-          }
-        } catch {
-          const isSuperAdmin = user.email && SUPER_ADMIN_EMAILS.includes(user.email);
-          setUserData({
-            role: isSuperAdmin ? 'admin' : 'user',
-            Name: user.displayName || user.email || 'User',
-            email: user.email || ''
-          });
-        }
-      } else {
-        setUserData(null);
-      }
+  // Restore session from localStorage on mount
+  const restoreSession = useCallback(async () => {
+    const token = localStorage.getItem('qp_token');
+    if (!token) {
       setLoading(false);
-    });
-
-    return unsubscribe;
+      return;
+    }
+    try {
+      const res = await fetch(`${API_BASE}/api/auth/me?token=${encodeURIComponent(token)}`);
+      if (res.ok) {
+        const user = await res.json();
+        setCurrentUser({ ...user, token });
+      } else {
+        // Token invalid / expired — clear it
+        localStorage.removeItem('qp_token');
+      }
+    } catch {
+      localStorage.removeItem('qp_token');
+    }
+    setLoading(false);
   }, []);
 
-  const logout = () => {
-    return signOut(auth);
-  };
+  useEffect(() => {
+    restoreSession();
+  }, [restoreSession]);
+
+  const logout = useCallback(() => {
+    localStorage.removeItem('qp_token');
+    setCurrentUser(null);
+  }, []);
+
+  // Called by login.jsx after successful POST /api/auth/login
+  const setSession = useCallback((userData, token) => {
+    localStorage.setItem('qp_token', token);
+    setCurrentUser({ ...userData, token });
+  }, []);
 
   const value = {
-    user: currentUser,
     currentUser,
-    userData,
-    isAdmin:
-      (userData && String(userData.role || '').toLowerCase() === 'admin') ||
-      (currentUser?.email && SUPER_ADMIN_EMAILS.includes(currentUser.email)),
-    logout
+    user: currentUser,
+    userData: currentUser,          // backward-compat alias used by Profile.jsx etc.
+    isAdmin: currentUser?.role === 'admin',
+    isAdvisor: currentUser?.role === 'advisor',
+    token: currentUser?.token || null,
+    logout,
+    setSession,
+    refreshUser: restoreSession,
   };
 
   return (
