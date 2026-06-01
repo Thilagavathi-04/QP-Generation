@@ -21,7 +21,7 @@ def test_paper_generation():
     
     try:
         # FastAPI Form parameters are sent as data in requests.post
-        response = requests.post(url, data=data, timeout=300)
+        response = requests.post(url, data=data, timeout=3000)
         print(f"Status Code: {response.status_code}")
         
         if response.status_code == 200:

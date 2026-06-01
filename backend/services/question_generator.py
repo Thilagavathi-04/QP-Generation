@@ -564,7 +564,7 @@ def generate_questions_with_ollama(
             try:
                 parsed_data = generate_json_with_ai(
                     prompt=prompt,
-                    timeout=300,
+                    timeout=3000,
                     temperature=0.5,
                     ai_provider=ai_provider,
                 )

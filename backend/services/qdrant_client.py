@@ -100,8 +100,24 @@ class QdrantManager:
 
         try:
             logger.info(f"Upserting {len(points)} chunks into Qdrant.")
-            self.client.upsert(collection_name=self.collection_name, points=points)
-            return True
+            
+            # Batch upsert to avoid payload size limits (max 32MB)
+            batch_size = 100
+            total_upserted = 0
+            
+            for i in range(0, len(points), batch_size):
+                batch = points[i:i + batch_size]
+                try:
+                    self.client.upsert(collection_name=self.collection_name, points=batch)
+                    total_upserted += len(batch)
+                    logger.debug(f"Upserted batch {i//batch_size + 1}: {len(batch)} points")
+                except Exception as batch_error:
+                    logger.error(f"Error upserting batch {i//batch_size + 1}: {batch_error}")
+                    # Continue with next batch even if one fails
+                    continue
+            
+            logger.info(f"Successfully upserted {total_upserted}/{len(points)} chunks")
+            return total_upserted == len(points)
         except Exception as e:
             logger.error(f"Error adding chunks to Qdrant: {e}")
             return False
@@ -137,14 +153,16 @@ class QdrantManager:
         try:
             query_vector = self._embed([query_text])[0]
             query_filter = self._build_filter(subject_id=subject_id, doc_type=doc_type)
-            response = self.client.query_points(
+            
+            # Use search() method (new Qdrant API) instead of deprecated query_points()
+            response = self.client.search(
                 collection_name=self.collection_name,
-                query=query_vector,
+                query_vector=query_vector,
                 query_filter=query_filter,
                 limit=n_results,
                 with_payload=True,
             )
-            points = response.points or []
+            points = response or []
 
             documents = []
             metadatas = []

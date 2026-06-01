@@ -13,6 +13,8 @@ const QuestionPaperGeneration = () => {
   const [saving, setSaving] = useState(false)
   const [showPreview, setShowPreview] = useState(false)
   const [generatedPapers, setGeneratedPapers] = useState([])
+  const [questionImages, setQuestionImages] = useState({}) // Map of question_id -> image_url
+  const [loadingImages, setLoadingImages] = useState(false)
   const [modalState, setModalState] = useState({ isOpen: false, type: '', data: null })
   const [formData, setFormData] = useState({
     subjectId: '',
@@ -39,6 +41,44 @@ const QuestionPaperGeneration = () => {
       setFormData(prev => ({ ...prev, questionBankId: '' }))
     }
   }, [formData.subjectId])
+
+  useEffect(() => {
+    if (showPreview && generatedPapers.length > 0) {
+      fetchQuestionImages()
+    }
+  }, [showPreview, generatedPapers])
+
+  const fetchQuestionImages = async () => {
+    try {
+      setLoadingImages(true)
+      const images = {}
+      
+      for (const paper of generatedPapers) {
+        for (const part of paper.parts) {
+          for (const question of part.questions) {
+            if (question.id) {
+              try {
+                const response = await api.get(`/api/questions/${question.id}/image`, {
+                  responseType: 'blob'
+                })
+                const imageUrl = URL.createObjectURL(response.data)
+                images[question.id] = imageUrl
+              } catch (error) {
+                // No image for this question, skip
+                console.log(`No image for question ${question.id}`)
+              }
+            }
+          }
+        }
+      }
+      
+      setQuestionImages(images)
+    } catch (error) {
+      console.error('Error fetching question images:', error)
+    } finally {
+      setLoadingImages(false)
+    }
+  }
 
   const fetchData = async () => {
     try {
@@ -717,6 +757,29 @@ const QuestionPaperGeneration = () => {
                                 <strong style={{ color: '#1f2937' }}>Q{qIndex + 1}.</strong>{' '}
                                 {question.content}
                               </div>
+
+                              {/* Display question image if available */}
+                              {questionImages[question.id] && (
+                                <div style={{ 
+                                  margin: '1rem 0',
+                                  padding: '0.5rem',
+                                  backgroundColor: '#f3f4f6',
+                                  borderRadius: '4px',
+                                  textAlign: 'center'
+                                }}>
+                                  <img 
+                                    src={questionImages[question.id]} 
+                                    alt="Question image"
+                                    style={{
+                                      maxWidth: '100%',
+                                      maxHeight: '300px',
+                                      borderRadius: '4px',
+                                      border: '1px solid #d1d5db'
+                                    }}
+                                  />
+                                </div>
+                              )}
+
                               <div style={{
                                 fontSize: '0.875rem',
                                 color: '#666',

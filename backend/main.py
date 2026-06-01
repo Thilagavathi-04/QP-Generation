@@ -106,7 +106,6 @@ app.add_middleware(
 # Initialize database on startup
 @app.on_event("startup")
 async def startup_event():
-    init_database()
     ensure_default_blueprint()
     print("--------------------------------------------------")
     print("SYSTEM: Auth Routes are fully loaded and active.")
@@ -433,6 +432,18 @@ async def create_subject(
                 shutil.copyfileobj(book_file.file, buffer)
             
             book_path = str(book_path)
+
+            if book_path.lower().endswith('.pdf'):
+                try:
+                    from services.image_extractor import ingest_pdf_images_to_database
+
+                    saved_count = ingest_pdf_images_to_database(
+                        book_path,
+                        source_reference_prefix=f"subject:{subject_id}",
+                    )
+                    print(f"Book image ingestion completed. Saved images: {saved_count}")
+                except Exception as img_exc:
+                    print(f"Warning: Failed to ingest book images: {img_exc}")
 
         course_outcome_path = None
         if course_outcome_file and course_outcome_file.filename:
@@ -1063,6 +1074,8 @@ async def generate_all_questions(subject_id: int, requests: List[QuestionGenerat
         tasks_inputs = []
 
         for request in requests:
+            topics_data = []
+
             # Determine topics for this request
             if request.topics and len(request.topics) > 0:
                 topics = request.topics
@@ -1077,7 +1090,7 @@ async def generate_all_questions(subject_id: int, requests: List[QuestionGenerat
                 cursor.execute(query, (subject_id, request.from_unit, request.to_unit))
                 topics_data = cursor.fetchall()
                 if topics_data:
-                    topics = [dict(row)['topic_name'] for row in topics_data]
+                    topics = [f"{dict(row)['topic_name']} (Unit {dict(row)['unit_number']})" for row in topics_data]
                 else:
                     topics = []
             
@@ -1813,6 +1826,50 @@ async def search_subjects(q: str = "", limit: int = 50):
         if connection:
             connection.close()
         raise HTTPException(status_code=500, detail=f"Search error: {str(e)}")
+
+@app.get("/api/questions/{question_id}/image")
+async def get_question_image(question_id: int):
+    """Get image for a specific question for preview"""
+    try:
+        from services.image_integration import get_image_for_question
+        from fastapi.responses import StreamingResponse
+        import io
+        
+        connection = get_db_connection()
+        if not connection:
+            raise HTTPException(status_code=500, detail="Database connection failed")
+        
+        cursor = get_cursor(connection)
+        placeholder = get_placeholder()
+        
+        # Fetch question content
+        cursor.execute(f"SELECT content FROM questions WHERE id = {placeholder}", (question_id,))
+        question = cursor.fetchone()
+        cursor.close()
+        connection.close()
+        
+        if not question:
+            raise HTTPException(status_code=404, detail="Question not found")
+        
+        # Get image for the question - pass empty set for used ids in preview
+        image_data = get_image_for_question(question['content'], set(), trace_label=f"preview_q{question_id}")
+        
+        if not image_data or not image_data.get('image_blob'):
+            raise HTTPException(status_code=404, detail="No image found for this question")
+        
+        # Return image as blob
+        return StreamingResponse(
+            io.BytesIO(image_data['image_blob']),
+            media_type="image/png",
+            headers={
+                "Content-Disposition": f"inline; filename=question_{question_id}_image.png"
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error fetching question image: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error fetching image: {str(e)}")
 
 # ==================== BLUEPRINT ENDPOINTS WITH PARTS ====================
 
@@ -2977,7 +3034,8 @@ if __name__ == "__main__":
         "main:app",
         host="0.0.0.0",
         port=int(os.getenv("PORT", "8010")),
-        reload=False,
-        log_level="info",
+        reload=True,
+        log_level="debug",
+        # log_level="info", in production mode
         access_log=True,
     )

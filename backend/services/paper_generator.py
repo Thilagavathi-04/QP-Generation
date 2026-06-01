@@ -20,6 +20,15 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 from reportlab.lib import colors
 from reportlab.lib.utils import ImageReader
 from core.database import get_db_type
+from services.image_integration import (
+    detect_image_required_in_question,
+    get_image_for_question,
+    save_image_blob_to_temp,
+    cleanup_temp_image_file,
+    fix_extreme_brightness_image,
+    rotate_image_for_pdf_insertion
+)
+from services.rag_config import logger
 
 
 NUMBER_WORDS = {
@@ -604,6 +613,7 @@ def generate_docx_paper(
     
     # Question sections
     question_number = 1
+    used_image_ids = set()  # Track images to avoid duplicates in the document
     
     for part in blueprint.get('parts', []):
         # Support both 'name' and 'part_name' keys
@@ -638,6 +648,49 @@ def generate_docx_paper(
             r_num = q_para.add_run(f"{question_number}. ")
             r_num.bold = True
             q_para.add_run(q['content'])
+            
+            # Try to fetch and insert image for this question
+            try:
+                image_data = get_image_for_question(q['content'], used_image_ids, trace_label=f"docx_q{question_number}")
+                if image_data and image_data.get('image_blob'):
+                    # Track this image to avoid duplicates
+                    if image_data.get('id'):
+                        used_image_ids.add(image_data.get('id'))
+                    
+                    # Fix extreme brightness before saving
+                    fixed_blob = fix_extreme_brightness_image(image_data['image_blob'])
+                    # DB images are stored with wrong orientation; rotate while inserting into PDF.
+                    fixed_blob = rotate_image_for_pdf_insertion(fixed_blob, clockwise_degrees=90)
+                    
+                    # Save image to temp file
+                    img_temp_path = save_image_blob_to_temp(fixed_blob)
+                    if img_temp_path:
+                        try:
+                            # Add image to document
+                            img_para = doc.add_paragraph()
+                            img_para.paragraph_format.left_indent = Inches(0.6)
+                            run = img_para.add_run()
+                            run.add_picture(img_temp_path, width=Inches(4.0))
+                            
+                            # Add small caption
+                            caption = doc.add_paragraph()
+                            caption.paragraph_format.left_indent = Inches(0.6)
+                            caption_run = caption.add_run(f"[{image_data.get('source_type', 'image')}]")
+                            caption_run.font.size = Pt(8)
+                            caption_run.italic = True
+                            
+                            # Mark for cleanup in co_temp_cleanup section
+                            logger.info(f"Added image for question {question_number}")
+                        except Exception as e:
+                            logger.error(f"Error adding image to DOCX: {e}")
+                        finally:
+                            # Schedule cleanup
+                            try:
+                                cleanup_temp_image_file(img_temp_path)
+                            except:
+                                pass
+            except Exception as e:
+                logger.error(f"Error fetching image for DOCX question {question_number}: {e}")
             
             question_number += 1
             doc.add_paragraph()
@@ -915,6 +968,7 @@ def generate_pdf_paper(
     
     # Questions
     question_number = 1
+    used_image_ids = set()  # Track images to avoid duplicates in the paper
     
     for part in blueprint.get('parts', []):
         # Support both 'name' and 'part_name' keys
@@ -942,8 +996,72 @@ def generate_pdf_paper(
         for q in part_questions:
             q_text = f"<b>{question_number}.</b> {q['content']}"
             elements.append(Paragraph(q_text, normal_style))
+            elements.append(Spacer(1, 0.1*inch))
+            
+            # Try to fetch and insert image for this question
+            temp_image_paths = []
+            try:
+                image_data = get_image_for_question(q['content'], used_image_ids, trace_label=f"pdf_q{question_number}")
+                if image_data and image_data.get('image_blob'):
+                    # Track this image to avoid duplicates
+                    if image_data.get('id'):
+                        used_image_ids.add(image_data.get('id'))
+                    
+                    # Fix extreme brightness before saving
+                    fixed_blob = fix_extreme_brightness_image(image_data['image_blob'])
+                    # DB images are stored with wrong orientation; rotate while inserting into PDF.
+                    fixed_blob = rotate_image_for_pdf_insertion(fixed_blob, clockwise_degrees=90)
+                    logger.info(f"PDF question {question_number}: rotation check completed (clockwise=90)")
+                    
+                    # Save image to temp file
+                    img_temp_path = save_image_blob_to_temp(fixed_blob)
+                    if img_temp_path:
+                        try:
+                            # Add image to PDF
+                            img_reader = ImageReader(img_temp_path)
+                            img_w, img_h = img_reader.getSize()
+                            
+                            # Fit image inside a safe bounding box to avoid PDF layout overflow
+                            # after rotation (portrait images can become very tall).
+                            max_width = 5.5 * inch
+                            max_height = 3.2 * inch
+                            if img_w > 0 and img_h > 0:
+                                width_ratio = max_width / float(img_w)
+                                height_ratio = max_height / float(img_h)
+                                scale = min(width_ratio, height_ratio)
+                                draw_width = float(img_w) * scale
+                                draw_height = float(img_h) * scale
+                            else:
+                                draw_width = max_width
+                                draw_height = 2.0 * inch
+                            
+                            img = RLImage(img_temp_path, width=draw_width, height=draw_height)
+                            logger.info(
+                                f"PDF question {question_number}: draw size set to {draw_width:.1f}x{draw_height:.1f} points"
+                            )
+                            elements.append(img)
+                            elements.append(Spacer(1, 0.05*inch))
+                            
+                            # Add caption
+                            caption_text = f"<i>[Image: {image_data.get('description', 'Related image')} - {image_data.get('source_type', 'source')}]</i>"
+                            elements.append(Paragraph(caption_text, small_style))
+                            elements.append(Spacer(1, 0.1*inch))
+                            
+                            temp_image_paths.append(img_temp_path)
+                            logger.info(f"Added image for question {question_number} in PDF")
+                        except Exception as e:
+                            logger.error(f"Error adding image to PDF: {e}")
+            except Exception as e:
+                logger.error(f"Error fetching image for PDF question {question_number}: {e}")
+            
             elements.append(Spacer(1, 0.15*inch))
             question_number += 1
+            
+            # Store temp paths for cleanup
+            if temp_image_paths:
+                if not hasattr(generate_pdf_paper, '_temp_image_paths'):
+                    generate_pdf_paper._temp_image_paths = []
+                generate_pdf_paper._temp_image_paths.extend(temp_image_paths)
         
         elements.append(Spacer(1, 0.2*inch))
 
@@ -1013,12 +1131,24 @@ def generate_pdf_paper(
     # Build PDF
     try:
         doc.build(elements)
+    except Exception as e:
+        logger.error(f"Failed while building PDF document: {e}", exc_info=True)
+        raise
     finally:
         if co_temp_cleanup:
             try:
                 Path(co_temp_cleanup).unlink(missing_ok=True)
             except Exception:
                 pass
+        
+        # Clean up temporary image files
+        if hasattr(generate_pdf_paper, '_temp_image_paths'):
+            for temp_path in generate_pdf_paper._temp_image_paths:
+                try:
+                    cleanup_temp_image_file(temp_path)
+                except Exception as e:
+                    logger.warning(f"Error cleaning up temp image: {e}")
+            generate_pdf_paper._temp_image_paths = []
 
 
 def generate_question_paper(

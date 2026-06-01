@@ -10,6 +10,11 @@ requests==2.31.0
 python-docx==1.1.0
 reportlab==4.0.7
 PyMuPDF==1.24.14
-qdrant-client
-email-validator
-sentence-transformers
+qdrant-client==1.7.1
+email-validator==2.0.0
+sentence-transformers==3.0.1
+Pillow==11.0.0
+bing-image-downloader==1.1.2
+langchain-core==0.1.52
+langgraph==0.0.50
+ddgs

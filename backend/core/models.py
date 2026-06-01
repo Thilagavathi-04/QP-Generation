@@ -17,6 +17,7 @@ class QuestionGenerationRequest(BaseModel):
     difficulty: str  # ✅ No default - REQUIRED
     part_name: Optional[str] = "Part A"  # Optional with default
     question_bank_id: Optional[int] = None
+    topics: Optional[List[str]] = None  # Optional list of specific topics to generate from
     ai_provider: Optional[str] = "auto"  # auto | ollama | xai | openai | gemini
     # Optional advanced per-unit plan; when provided, the backend will ignore
     # the single global `count`/`difficulty` and instead generate per plan item.

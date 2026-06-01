@@ -43,3 +43,4 @@ frontend/dist/
 *.pyc
 .env
 backend/.env
+backend/data

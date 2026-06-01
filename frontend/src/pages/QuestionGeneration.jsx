@@ -256,7 +256,7 @@ const QuestionGeneration = () => {
 
     const selectedTopicNames = topics
       .filter(t => !t.deselected)
-      .map(t => `${t.topic_name}`)
+      .map(t => `${t.topic_name} (Unit ${t.unit_number})`)
 
     try {
       const requests = parts.map(part => {

@@ -60,14 +60,14 @@ if [ ! -d "backend/venv" ] || [ ! -d "frontend/node_modules" ]; then
     exit 1
 fi
 
-# Check if sqlite3 is running
-if ! systemctl is-active --quiet sqlite3 2>/dev/null; then
-    print_info "Starting sqlite3 service..."
-    sudo systemctl start sqlite3
-    print_success "sqlite3 started"
-else
-    print_success "sqlite3 is already running"
-fi
+# # Check if sqlite3 is running
+# if ! systemctl is-active --quiet sqlite3 2>/dev/null; then
+#     print_info "Starting sqlite3 service..."
+#     sudo systemctl start sqlite3
+#     print_success "sqlite3 started"
+# else
+#     print_success "sqlite3 is already running"
+# fi
 
 # Create log directory
 mkdir -p logs
