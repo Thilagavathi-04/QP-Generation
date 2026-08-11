@@ -105,6 +105,49 @@ def _source_priority(source_type: str | None) -> int:
     return 3
 
 
+def flip_image_vertically(image_blob: bytes) -> bytes:
+    """
+    Flip/invert image vertically (up -> down) before saving to database.
+    This corrects images that are extracted in inverted orientation from PDFs.
+    
+    Args:
+        image_blob: Binary image data (PNG/JPG)
+        
+    Returns:
+        Vertically flipped image blob
+    """
+    try:
+        from PIL import Image
+        import io
+        import numpy as np
+        
+        # Open image from blob
+        img = Image.open(io.BytesIO(image_blob))
+        img = img.convert('RGB')
+        
+        # Convert to numpy array
+        img_array = np.array(img)
+        
+        # Apply vertical flip: reverse first axis (rows)
+        # image_array[::-1, :, :] flips up -> down
+        flipped_array = img_array[::-1, :, :]
+        
+        # Convert back to PIL Image
+        flipped_img = Image.fromarray(flipped_array, 'RGB')
+        
+        # Save as PNG blob
+        output = io.BytesIO()
+        flipped_img.save(output, format='PNG', optimize=True)
+        flipped_blob = output.getvalue()
+        
+        logger.info(f"Applied vertical flip to image: {len(image_blob)} bytes -> {len(flipped_blob)} bytes")
+        return flipped_blob
+        
+    except Exception as e:
+        logger.error(f"Error flipping image vertically: {e}", exc_info=True)
+        return image_blob
+
+
 def detect_image_required_in_question(question_text: str) -> bool:
     """
     Detect if a question requires an image based on keywords.
@@ -354,117 +397,6 @@ def _search_database_for_image(keywords: list, used_image_ids: set) -> Optional[
         logger.error(f"Error searching database for images: {e}")
         return None
 
-
-def fix_extreme_brightness_image(image_blob: bytes) -> bytes:
-    """
-    Enhance image for better visibility in documents.
-    Applies aggressive contrast and sharpening to all images.
-    
-    Args:
-        image_blob: Original image blob
-        
-    Returns:
-        Enhanced image blob
-    """
-    try:
-        from PIL import Image, ImageEnhance, ImageOps
-        from PIL import ImageFilter
-        import io
-        
-        # Open and normalize EXIF orientation first.
-        img = Image.open(io.BytesIO(image_blob))
-        img = ImageOps.exif_transpose(img)
-        img = img.convert('RGB')
-        img.load()
-        
-        ori_size = len(image_blob)
-        logger.info(f"Enhancing image ({ori_size} bytes, {img.width}x{img.height})")
-        
-        # Use conservative, conditional enhancement to avoid washed-out/blank images.
-        gray = img.convert('L')
-        extrema = gray.getextrema()
-        dynamic_range = float(extrema[1] - extrema[0])
-
-        contrast_factor = 1.15 if dynamic_range < 80 else 1.05
-        brightness_factor = 1.0
-
-        if extrema[1] < 90:
-            brightness_factor = 1.08
-        elif extrema[1] > 245 and dynamic_range < 40:
-            brightness_factor = 0.94
-
-        contrast = ImageEnhance.Contrast(img)
-        img = contrast.enhance(contrast_factor)
-
-        brightness = ImageEnhance.Brightness(img)
-        img = brightness.enhance(brightness_factor)
-
-        img = img.filter(ImageFilter.SHARPEN)
-        
-        # Save
-        output = io.BytesIO()
-        img.save(output, format='PNG', optimize=False)
-        return output.getvalue()
-    
-    except Exception as e:
-        logger.error(f"Error enhancing image: {e}", exc_info=True)
-        return image_blob
-
-
-def rotate_image_for_pdf_insertion(image_blob: bytes, clockwise_degrees: int = 90) -> bytes:
-    """
-    Rotate image blob before embedding in generated PDFs.
-
-    Args:
-        image_blob: Original image blob
-        clockwise_degrees: Rotation angle in clockwise direction
-
-    Returns:
-        Rotated image blob as PNG bytes
-    """
-    try:
-        from PIL import Image, ImageOps
-        import io
-
-        img = Image.open(io.BytesIO(image_blob))
-        img = ImageOps.exif_transpose(img)
-        img = img.convert('RGB')
-        img.load()
-        original_size = (img.width, img.height)
-        original_bytes = len(image_blob)
-
-        # PIL rotate uses counter-clockwise angles, so negate clockwise input.
-        ccw_degrees = (-int(clockwise_degrees)) % 360
-        if ccw_degrees:
-            img = img.rotate(ccw_degrees, expand=True)
-            logger.info(
-                "Rotation applied for PDF insertion: clockwise=%s, size=%sx%s -> %sx%s",
-                clockwise_degrees,
-                original_size[0],
-                original_size[1],
-                img.width,
-                img.height,
-            )
-        else:
-            logger.info(
-                "Rotation skipped for PDF insertion: clockwise=%s results in 0-degree transform (size=%sx%s)",
-                clockwise_degrees,
-                original_size[0],
-                original_size[1],
-            )
-
-        output = io.BytesIO()
-        img.save(output, format='PNG', optimize=False)
-        rotated_blob = output.getvalue()
-        logger.info(
-            "Rotation output bytes for PDF insertion: %s -> %s",
-            original_bytes,
-            len(rotated_blob),
-        )
-        return rotated_blob
-    except Exception as e:
-        logger.error(f"Error rotating image for PDF insertion: {e}", exc_info=True)
-        return image_blob
 
 
 def save_image_blob_to_temp(image_blob: bytes) -> Optional[str]:

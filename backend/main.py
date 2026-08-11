@@ -3034,7 +3034,6 @@ if __name__ == "__main__":
         "main:app",
         host="0.0.0.0",
         port=int(os.getenv("PORT", "8010")),
-        reload=True,
         log_level="debug",
         # log_level="info", in production mode
         access_log=True,

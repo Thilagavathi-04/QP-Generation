@@ -9,7 +9,7 @@ dependencies = [
     "uvicorn==0.27.0",
     "mysql-connector-python==8.3.0",
     "python-dotenv==1.0.0",
-    "pydantic==2.5.3",
+    "pydantic>=2.11.7",
     "python-multipart==0.0.6",
     "mysqlclient==2.1.1",
     "pdfplumber==0.10.3",
@@ -20,4 +20,6 @@ dependencies = [
     "qdrant-client",
     "email-validator",
     "sentence-transformers",
+    "ddgs>=9.14.4",
+    "matplotlib>=3.10.9",
 ]

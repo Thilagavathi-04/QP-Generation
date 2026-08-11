@@ -163,6 +163,21 @@ def migrate_database():
         except:
             pass
         
+        # Add missing columns to users table
+        users_columns = [
+            ('password_hash', 'VARCHAR(255)'),
+            ('role', "VARCHAR(50) DEFAULT 'advisor'"),
+            ('department', 'VARCHAR(255)'),
+            ('must_change_password', 'BOOLEAN DEFAULT FALSE'),
+            ('courses', 'JSON')
+        ]
+        for col_name, col_type in users_columns:
+            try:
+                cursor.execute(f"ALTER TABLE users ADD COLUMN {col_name} {col_type}")
+                print(f"Added column {col_name} to users table.")
+            except:
+                pass
+        
         connection.commit()
         cursor.close()
         connection.close()
@@ -334,7 +349,12 @@ def init_database():
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 email VARCHAR(255) NOT NULL UNIQUE,
                 name VARCHAR(255) NOT NULL,
+                password_hash VARCHAR(255),
+                role VARCHAR(50) DEFAULT 'advisor',
+                department VARCHAR(255),
                 status VARCHAR(20) DEFAULT 'pending',
+                must_change_password BOOLEAN DEFAULT FALSE,
+                courses JSON,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 last_login TIMESTAMP
             )

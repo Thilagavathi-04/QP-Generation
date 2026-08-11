@@ -8,7 +8,11 @@ import re
 import os
 from pathlib import Path
 from dotenv import load_dotenv
+from functools import lru_cache
 from typing import List, Optional, Dict, Any
+import numpy as np
+from sentence_transformers import SentenceTransformer
+from services.rag_config import EMBEDDING_MODEL_NAME, QUESTION_DEDUPLICATION_THRESHOLD
 
 # Load backend/.env for AI provider settings
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -40,6 +44,58 @@ LOW_MARK_PREFIX_PATTERN = re.compile(
 def _is_placeholder_key(value: str) -> bool:
     lower = (value or "").strip().lower()
     return (not lower) or lower.startswith("your_") or lower.endswith("_here")
+
+
+@lru_cache(maxsize=1)
+def _get_dedup_model() -> SentenceTransformer:
+    return SentenceTransformer(EMBEDDING_MODEL_NAME)
+
+
+def deduplicate_questions(
+    questions: List[Dict[str, Any]],
+    threshold: Optional[float] = None
+) -> List[Dict[str, Any]]:
+    """
+    Deduplicates a list of questions using semantic similarity matching.
+    If two questions have cosine similarity above the threshold, the duplicate is removed.
+    """
+    if not questions or len(questions) <= 1:
+        return questions
+
+    target_threshold = threshold if threshold is not None else QUESTION_DEDUPLICATION_THRESHOLD
+    contents = [str(q.get("content", "")).strip() for q in questions]
+
+    try:
+        model = _get_dedup_model()
+        embeddings = model.encode(contents, normalize_embeddings=True)
+    except Exception as exc:
+        print(f"WARNING: Semantic deduplication model unavailable ({exc}), using exact string matching.")
+        seen_texts = set()
+        unique = []
+        for q in questions:
+            text = str(q.get("content", "")).strip().lower()
+            if text not in seen_texts:
+                seen_texts.add(text)
+                unique.append(q)
+        return unique
+
+    kept_indices: List[int] = []
+
+    for i, emb in enumerate(embeddings):
+        if not contents[i]:
+            continue
+        
+        is_duplicate = False
+        for kept_idx in kept_indices:
+            sim = float(np.dot(emb, embeddings[kept_idx]))
+            if sim >= target_threshold:
+                is_duplicate = True
+                break
+        
+        if not is_duplicate:
+            kept_indices.append(i)
+
+    return [questions[idx] for idx in kept_indices]
 
 
 def _extract_json_payload(raw_text: str) -> Dict[str, Any]:
@@ -608,8 +664,11 @@ def generate_questions_with_ollama(
                         "blooms_level": blooms_for_prompt,
                     }
                     
-                    if cleaned_q["content"] and len(all_questions) < count:
+                    if cleaned_q["content"]:
                         all_questions.append(cleaned_q)
+
+                # Apply semantic deduplication after processing each batch
+                all_questions = deduplicate_questions(all_questions)
 
             except (json.JSONDecodeError, ValueError) as parse_err:
                 print(f"Failed to parse JSON from attempt {attempt}: {parse_err}")
@@ -620,7 +679,10 @@ def generate_questions_with_ollama(
             if attempt == max_attempts: break
             continue
 
+    # Final semantic deduplication pass
+    all_questions = deduplicate_questions(all_questions)
+
     if len(all_questions) < count:
         print(f"WARNING: Final count ({len(all_questions)}) is still less than requested ({count}) after {max_attempts} attempts.")
     
-    return all_questions
+    return all_questions[:count]

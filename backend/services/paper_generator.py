@@ -24,9 +24,7 @@ from services.image_integration import (
     detect_image_required_in_question,
     get_image_for_question,
     save_image_blob_to_temp,
-    cleanup_temp_image_file,
-    fix_extreme_brightness_image,
-    rotate_image_for_pdf_insertion
+    cleanup_temp_image_file
 )
 from services.rag_config import logger
 
@@ -657,13 +655,8 @@ def generate_docx_paper(
                     if image_data.get('id'):
                         used_image_ids.add(image_data.get('id'))
                     
-                    # Fix extreme brightness before saving
-                    fixed_blob = fix_extreme_brightness_image(image_data['image_blob'])
-                    # DB images are stored with wrong orientation; rotate while inserting into PDF.
-                    fixed_blob = rotate_image_for_pdf_insertion(fixed_blob, clockwise_degrees=90)
-                    
-                    # Save image to temp file
-                    img_temp_path = save_image_blob_to_temp(fixed_blob)
+                    # Save original extracted image to temp file without modifications
+                    img_temp_path = save_image_blob_to_temp(image_data['image_blob'])
                     if img_temp_path:
                         try:
                             # Add image to document
@@ -1007,14 +1000,8 @@ def generate_pdf_paper(
                     if image_data.get('id'):
                         used_image_ids.add(image_data.get('id'))
                     
-                    # Fix extreme brightness before saving
-                    fixed_blob = fix_extreme_brightness_image(image_data['image_blob'])
-                    # DB images are stored with wrong orientation; rotate while inserting into PDF.
-                    fixed_blob = rotate_image_for_pdf_insertion(fixed_blob, clockwise_degrees=90)
-                    logger.info(f"PDF question {question_number}: rotation check completed (clockwise=90)")
-                    
-                    # Save image to temp file
-                    img_temp_path = save_image_blob_to_temp(fixed_blob)
+                    # Save original extracted image to temp file without modifications
+                    img_temp_path = save_image_blob_to_temp(image_data['image_blob'])
                     if img_temp_path:
                         try:
                             # Add image to PDF

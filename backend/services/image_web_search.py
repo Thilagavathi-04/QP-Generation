@@ -10,9 +10,21 @@ import random
 import urllib.parse
 import sys
 import os
+from pathlib import Path
+from dotenv import load_dotenv
 from typing import List, Optional, Dict, Any
 from PIL import Image, ImageOps
 import time
+
+# Load backend/.env
+BASE_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(BASE_DIR / ".env")
+
+IMAGE_SEARCH_PROXY = os.getenv("IMAGE_SEARCH_PROXY", "").strip() or None
+GOOGLE_CSE_CX = os.getenv("GOOGLE_CSE_CX", "").strip()
+GOOGLE_CSE_API_KEY = os.getenv("GOOGLE_CSE_API_KEY", "").strip()
+UNSPLASH_ACCESS_KEY = os.getenv("UNSPLASH_ACCESS_KEY", "").strip()
+
 
 # Handle imports for both direct execution and module import
 try:
@@ -170,12 +182,19 @@ class ImageWebSearch:
             candidates = []
             
             try:
-                # Initialize DDGS without arguments for compatibility
-                ddgs = DDGS(timeout=10)
+                # Initialize DDGS with proxy support if configured
+                if IMAGE_SEARCH_PROXY:
+                    logger.info(f"Using proxy for DuckDuckGo image search: {IMAGE_SEARCH_PROXY}")
+                    ddgs = DDGS(proxy=IMAGE_SEARCH_PROXY, timeout=10)
+                else:
+                    ddgs = DDGS(timeout=10)
             except TypeError:
                 # Fallback for different versions
                 try:
-                    ddgs = DDGS()
+                    if IMAGE_SEARCH_PROXY:
+                        ddgs = DDGS(proxies=IMAGE_SEARCH_PROXY)
+                    else:
+                        ddgs = DDGS()
                 except Exception as init_e:
                     logger.error(f"Failed to initialize DDGS: {init_e}")
                     return images
@@ -271,6 +290,133 @@ class ImageWebSearch:
             logger.error(f"Error searching DuckDuckGo: {e}")
         
         return images
+
+    @staticmethod
+    def search_google_cse(keywords: str, limit: int = 5, min_resolution: int = 400) -> List[Dict[str, Any]]:
+        """
+        Search for images using Google Custom Search JSON API.
+        """
+        images = []
+        if not GOOGLE_CSE_CX or not GOOGLE_CSE_API_KEY:
+            logger.warning("Google CSE CX or API Key missing. Skipping Google Custom Search.")
+            return images
+
+        try:
+            logger.info(f"Searching Google CSE for images: {keywords}")
+            encoded_query = urllib.parse.quote(keywords)
+            url = f"https://www.googleapis.com/customsearch/v1?q={encoded_query}&cx={GOOGLE_CSE_CX}&key={GOOGLE_CSE_API_KEY}&searchType=image&num={limit}"
+            
+            response = requests.get(url, timeout=10)
+            if response.status_code != 200:
+                logger.error(f"Google CSE API Error: {response.status_code} - {response.text[:200]}")
+                return images
+
+            data = response.json()
+            items = data.get("items", [])
+            logger.info(f"Collected {len(items)} candidates from Google Custom Search")
+
+            for item in items:
+                try:
+                    image_url = item.get("link")
+                    if not image_url:
+                        continue
+                    
+                    # Verify resolution and download
+                    img_blob = ImageWebSearch._download_and_verify_resolution(
+                        image_url,
+                        min_resolution=min_resolution
+                    )
+                    
+                    if img_blob:
+                        images.append({
+                            "image_blob": img_blob,
+                            "source_reference": image_url,
+                            "file_name": f"google_cse_{keywords.replace(' ', '_')}_{len(images)}.png",
+                            "keywords": keywords,
+                            "description": item.get("title", keywords),
+                            "source_type": "web_search",
+                            "source_domain": urllib.parse.urlparse(image_url).netloc or "google_cse",
+                        })
+                    
+                    if len(images) >= limit:
+                        break
+                except Exception as inner_e:
+                    logger.debug(f"Error processing Google CSE candidate: {inner_e}")
+                    continue
+            
+            logger.info(f"Downloaded {len(images)} images from Google CSE for keywords: {keywords}")
+        except Exception as e:
+            logger.error(f"Error searching Google CSE: {e}")
+
+        return images
+
+    @staticmethod
+    def search_unsplash(keywords: str, limit: int = 5, min_resolution: int = 400) -> List[Dict[str, Any]]:
+        """
+        Search for images using Unsplash API.
+        """
+        images = []
+        if not UNSPLASH_ACCESS_KEY:
+            logger.warning("Unsplash ACCESS Key missing. Skipping Unsplash Search.")
+            return images
+
+        try:
+            logger.info(f"Searching Unsplash for images: {keywords}")
+            encoded_query = urllib.parse.quote(keywords)
+            url = f"https://api.unsplash.com/search/photos?query={encoded_query}&per_page={limit}"
+            headers = {
+                "Authorization": f"Client-ID {UNSPLASH_ACCESS_KEY}",
+                "Accept-Version": "v1"
+            }
+            
+            response = requests.get(url, headers=headers, timeout=10)
+            if response.status_code != 200:
+                logger.error(f"Unsplash API Error: {response.status_code} - {response.text[:200]}")
+                return images
+
+            data = response.json()
+            results = data.get("results", [])
+            logger.info(f"Collected {len(results)} candidates from Unsplash")
+
+            for result in results:
+                try:
+                    urls = result.get("urls", {})
+                    image_url = urls.get("regular") or urls.get("full") or urls.get("raw")
+                    if not image_url:
+                        continue
+                    
+                    # Verify resolution and download
+                    img_blob = ImageWebSearch._download_and_verify_resolution(
+                        image_url,
+                        min_resolution=min_resolution
+                    )
+                    
+                    if img_blob:
+                        photographer = result.get("user", {}).get("name", "Unsplash Photographer")
+                        description = result.get("description") or result.get("alt_description") or keywords
+                        attributed_description = f"{description} (Photo by {photographer} on Unsplash)"
+                        
+                        images.append({
+                            "image_blob": img_blob,
+                            "source_reference": image_url,
+                            "file_name": f"unsplash_{keywords.replace(' ', '_')}_{len(images)}.png",
+                            "keywords": keywords,
+                            "description": attributed_description,
+                            "source_type": "web_search",
+                            "source_domain": "unsplash.com",
+                        })
+                    
+                    if len(images) >= limit:
+                        break
+                except Exception as inner_e:
+                    logger.debug(f"Error processing Unsplash candidate: {inner_e}")
+                    continue
+            
+            logger.info(f"Downloaded {len(images)} images from Unsplash for keywords: {keywords}")
+        except Exception as e:
+            logger.error(f"Error searching Unsplash: {e}")
+
+        return images
     
     @staticmethod
     def _download_and_verify_resolution(url: str, min_resolution: int = 400, 
@@ -342,23 +488,52 @@ class ImageWebSearch:
     def search_images(keywords: str, limit: int = 5, min_resolution: int = 400,
                      keyword_filter: Optional[str] = None) -> List[Dict[str, Any]]:
         """
-        Search for images using DuckDuckGo.
-        
-        Args:
-            keywords: Search keywords
-            limit: Number of images to retrieve
-            min_resolution: Minimum image resolution in pixels (default 400x400)
-            keyword_filter: Comma-separated keywords to filter URLs
-            
-        Returns:
-            List of image data with metadata
+        Search for images with dynamic fallbacks:
+        1. DuckDuckGo (scraping, with proxy support if configured)
+        2. Google Custom Search JSON API (authenticated)
+        3. Unsplash API (authenticated)
         """
-        return ImageWebSearch.search_duckduckgo(
-            keywords,
-            limit=limit,
-            min_resolution=min_resolution,
-            keyword_filter=keyword_filter
-        )
+        # 1. Try DuckDuckGo
+        images = []
+        try:
+            images = ImageWebSearch.search_duckduckgo(
+                keywords,
+                limit=limit,
+                min_resolution=min_resolution,
+                keyword_filter=keyword_filter
+            )
+        except Exception as ddg_err:
+            logger.warning(f"DuckDuckGo search failed: {ddg_err}. Checking fallbacks...")
+            
+        if images:
+            return images
+            
+        # 2. Try Google Custom Search Engine
+        if GOOGLE_CSE_CX and GOOGLE_CSE_API_KEY:
+            try:
+                images = ImageWebSearch.search_google_cse(
+                    keywords,
+                    limit=limit,
+                    min_resolution=min_resolution
+                )
+            except Exception as google_err:
+                logger.warning(f"Google CSE search failed: {google_err}")
+                
+        if images:
+            return images
+
+        # 3. Try Unsplash
+        if UNSPLASH_ACCESS_KEY:
+            try:
+                images = ImageWebSearch.search_unsplash(
+                    keywords,
+                    limit=limit,
+                    min_resolution=min_resolution
+                )
+            except Exception as unsplash_err:
+                logger.warning(f"Unsplash search failed: {unsplash_err}")
+                
+        return images
     
     @staticmethod
     def verify_image_matches_context(image_blob: bytes, context_keywords: List[str]) -> float:

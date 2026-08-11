@@ -29,6 +29,8 @@ EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
 # Chunking settings
 CHUNK_SIZE = 700  # Within 500-800 range
 CHUNK_OVERLAP = 100 # Within 50-100 range
+SEMANTIC_CHUNK_SIMILARITY_THRESHOLD = float(os.getenv("SEMANTIC_CHUNK_SIMILARITY_THRESHOLD", "0.55"))
+SEMANTIC_CHUNK_MIN_CHAR_LENGTH = int(os.getenv("SEMANTIC_CHUNK_MIN_CHAR_LENGTH", "250"))
 
 # Logging configuration (non-invasive)
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()

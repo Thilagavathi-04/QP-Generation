@@ -16,16 +16,19 @@ from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 # Handle imports for both direct execution and module import
 try:
     from services.rag_config import logger
+    from services.image_integration import flip_image_vertically
 except ImportError:
     # When run directly, add parent directory to path
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     try:
         from rag_config import logger
+        from image_integration import flip_image_vertically
     except ImportError:
         # Fallback: create a simple logger
         import logging
         logger = logging.getLogger(__name__)
         logger.warning("Could not import rag_config logger")
+        flip_image_vertically = None
 
 
 def detect_and_fix_rotation(img: Image.Image) -> Image.Image:
@@ -167,8 +170,10 @@ def extract_images_from_pdf(pdf_path: str) -> List[Dict[str, Any]]:
                         pix.samples
                     )
                     
+
+
                     # Apply rotation correction
-                    pil_img = detect_and_fix_rotation(pil_img)
+                    # pil_img = detect_and_fix_rotation(pil_img)
                     
                     # Convert RGBA to RGB if needed (remove alpha channel)
                     if pil_img.mode == 'RGBA':
@@ -184,11 +189,21 @@ def extract_images_from_pdf(pdf_path: str) -> List[Dict[str, Any]]:
                         pil_img = pil_img.convert('RGB')
                     
                     # Apply quality enhancement
-                    pil_img = enhance_image_quality(pil_img, quality_boost="medium")
+                    # pil_img = enhance_image_quality(pil_img, quality_boost="medium")
 
                     output = io.BytesIO()
                     pil_img.save(output, format='PNG', optimize=True)
+
+                    custom_path = "/home/thilagavathi/projects/images/test.png"
+                    # Create directory if it doesn't exist
+                    os.makedirs(os.path.dirname(custom_path), exist_ok=True)
+                    pil_img.save(custom_path, format='PNG', optimize=True)
+                    
                     img_blob = output.getvalue()
+                    
+                    # Apply vertical flip before saving to database
+                    if flip_image_vertically:
+                        img_blob = flip_image_vertically(img_blob)
                     
                     file_name = f"page_{page_num + 1}_img_{img_index + 1}.png"
                     source_ref = f"page_{page_num + 1}_index_{img_index}"
@@ -203,7 +218,6 @@ def extract_images_from_pdf(pdf_path: str) -> List[Dict[str, Any]]:
                     
                     logger.info(f"Extracted image: {file_name} from {pdf_path}")
                     pix = None  # Free resources
-                    
                 except Exception as e:
                     logger.error(f"Error extracting image {img_index} from page {page_num}: {e}")
                     continue
@@ -393,6 +407,10 @@ def extract_images_and_text_from_pdf(pdf_path: str) -> Dict[str, Any]:
                     output = io.BytesIO()
                     pil_img.save(output, format='PNG', compress_level=6)
                     img_blob = output.getvalue()
+                    
+                    # Apply vertical flip before saving to database
+                    if flip_image_vertically:
+                        img_blob = flip_image_vertically(img_blob)
                     
                     # Generate keywords with context
                     keywords, description = generate_image_keywords(img_blob, context_text)

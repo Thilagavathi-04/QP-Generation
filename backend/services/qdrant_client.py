@@ -155,13 +155,13 @@ class QdrantManager:
             query_filter = self._build_filter(subject_id=subject_id, doc_type=doc_type)
             
             # Use search() method (new Qdrant API) instead of deprecated query_points()
-            response = self.client.search(
+            response = self.client.query_points(
                 collection_name=self.collection_name,
-                query_vector=query_vector,
-                query_filter=query_filter,
+                query=query_vector,
                 limit=n_results,
+                query_filter=query_filter,
                 with_payload=True,
-            )
+            ).points
             points = response or []
 
             documents = []
