@@ -1,42 +1,8 @@
 from fastapi import FastAPI, HTTPException, status, UploadFile, File, Form, Body, BackgroundTasks
 from pydantic import BaseModel
 import uuid
-import redis
-import json
 
-redis_client = None
-try:
-    redis_url = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
-    redis_client = redis.Redis.from_url(redis_url, decode_responses=True)
-    redis_client.ping()
-except Exception:
-    redis_client = None
-
-class JobStore:
-    def __init__(self):
-        self.local_jobs = {}
-        
-    def __setitem__(self, key, value):
-        if redis_client:
-            redis_client.set(f"job:{key}", json.dumps(value), ex=86400) # expire in 24h
-        else:
-            self.local_jobs[key] = value
-            
-    def __getitem__(self, key):
-        if redis_client:
-            data = redis_client.get(f"job:{key}")
-            if data:
-                return json.loads(data)
-            raise KeyError(key)
-        return self.local_jobs[key]
-        
-    def __contains__(self, key):
-        if redis_client:
-            return redis_client.exists(f"job:{key}")
-        return key in self.local_jobs
-
-GENERATION_JOBS = JobStore()
-
+GENERATION_JOBS = {}
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from typing import List, Optional
@@ -52,11 +18,6 @@ import tempfile
 import time
 import hashlib
 import base64
-import jwt
-
-JWT_SECRET = os.getenv('JWT_SECRET', 'super-secret-key-change-me-to-something-secure-for-production')
-JWT_ALGORITHM = 'HS256'
-ALLOWED_ORIGINS = os.getenv('ALLOWED_ORIGINS', 'http://localhost:5173,http://localhost:5174,http://localhost:3000').split(',')
 from pathlib import Path
 
 from email.message import EmailMessage
@@ -114,21 +75,6 @@ from services.rag_retrieval import retrieve_context, format_context_for_prompt
 from services.question_generator import generate_questions_with_ollama, test_ollama_connection
 from services.grading_engine import generate_answer_script, grade_student_paper, extract_text_from_pdf
 
-from core.celery_app import celery_app
-
-@celery_app.task(name="celery_run_generate_questions")
-def celery_run_generate_questions(job_id: str, subject_id: int, request_dict: dict):
-    request = QuestionGenerationRequest(**request_dict)
-    run_generate_questions(job_id, subject_id, request)
-
-@celery_app.task(name="celery_run_generate_all_questions")
-def celery_run_generate_all_questions(job_id: str, subject_id: int, requests_dict: list):
-    requests = [QuestionGenerationRequest(**r) for r in requests_dict]
-    _run_generate_all_questions(job_id, subject_id, requests)
-
-
-
-
 # Blueprint Persistence Safety Layers
 from services.blueprint_repository import BlueprintRepository
 from services.blueprint_loader import BlueprintLoader
@@ -154,7 +100,7 @@ app = FastAPI(title="Quest Generator API", version="1.0.0")
 # CORS middleware "*", 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
+    allow_origins=["*", "http://localhost:5173", "http://localhost:5174", "http://localhost:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -175,20 +121,15 @@ def _hash_password(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
 
 def _make_token(user_id: int, email: str, role: str) -> str:
-    """Create a secure JWT token encoding user info"""
-    from datetime import datetime, timedelta
-    payload = {
-        "id": user_id, 
-        "email": email, 
-        "role": role,
-        "exp": datetime.utcnow() + timedelta(days=7)
-    }
-    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+    """Create a simple base64 token encoding user info"""
+    payload = json.dumps({"id": user_id, "email": email, "role": role})
+    return base64.b64encode(payload.encode()).decode()
 
 def _decode_token(token: str) -> dict:
-    """Decode JWT token and return payload dict"""
+    """Decode base64 token and return payload dict"""
     try:
-        return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        payload = base64.b64decode(token.encode()).decode()
+        return json.loads(payload)
     except Exception:
         return {}
 
@@ -1092,28 +1033,12 @@ def generate_questions(subject_id: int, request: QuestionGenerationRequest, back
     
     job_id = str(uuid.uuid4())
     GENERATION_JOBS[job_id] = {"status": "pending"}
+    background_tasks.add_task(run_generate_questions, job_id, subject_id, request)
     
-    if redis_client:
-        celery_run_generate_questions.delay(job_id, subject_id, request.dict())
-    else:
-        background_tasks.add_task(run_generate_questions, job_id, subject_id, request)
-        
     return {"success": True, "job_id": job_id}
-
 
 @app.post("/api/subjects/{subject_id}/generate-all-questions")
-def generate_all_questions(subject_id: int, requests: List[QuestionGenerationRequest], background_tasks: BackgroundTasks):
-    job_id = str(uuid.uuid4())
-    GENERATION_JOBS[job_id] = {"status": "pending"}
-    
-    if redis_client:
-        celery_run_generate_all_questions.delay(job_id, subject_id, [r.dict() for r in requests])
-    else:
-        background_tasks.add_task(_run_generate_all_questions, job_id, subject_id, requests)
-        
-    return {"success": True, "job_id": job_id}
-
-def _run_generate_all_questions(job_id: str, subject_id: int, requests: List[QuestionGenerationRequest]):
+def generate_all_questions(subject_id: int, requests: List[QuestionGenerationRequest]):
     """Generate questions for all parts at once"""
 
     default_provider = requests[0].ai_provider if requests else None
@@ -1188,7 +1113,7 @@ def _run_generate_all_questions(job_id: str, subject_id: int, requests: List[Que
                     'context_str': context_str
                 })
 
-        def fetch_questions(input_data):
+        async def fetch_questions(input_data):
             req = input_data['request']
             try:
                 all_questions = []
@@ -1209,7 +1134,8 @@ def _run_generate_all_questions(job_id: str, subject_id: int, requests: List[Que
                         if not unit_topics:
                             continue
 
-                        unit_questions = generate_questions_with_ollama(
+                        unit_questions = 
+                            generate_questions_with_ollama,
                             topics=unit_topics,
                             count=item.count,
                             marks=req.marks,
@@ -1226,7 +1152,8 @@ def _run_generate_all_questions(job_id: str, subject_id: int, requests: List[Que
                         all_questions.extend(unit_questions)
                 else:
                     # Backwards-compatible behavior for parts without a plan
-                    all_questions = generate_questions_with_ollama(
+                    all_questions = 
+                        generate_questions_with_ollama,
                         topics=topics,
                         count=req.count,
                         marks=req.marks,
@@ -1252,36 +1179,25 @@ def _run_generate_all_questions(job_id: str, subject_id: int, requests: List[Que
 
         if tasks_inputs:
             # Execute all part generations concurrently
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                all_results = list(executor.map(fetch_questions, tasks_inputs))
+            all_results = await asyncio.gather(*(fetch_questions(inp) for inp in tasks_inputs))
         else:
             all_results = []
         
         cursor.close()
         connection.close()
         
-        GENERATION_JOBS[job_id] = {
-            "status": "completed",
-            "result": {
-                'success': True,
-                'parts': all_results,
-                'total_parts': len(requests)
-            }
+        return {
+            'success': True,
+            'parts': all_results,
+            'total_parts': len(requests)
         }
     
-    except HTTPException as e:
-        GENERATION_JOBS[job_id] = {
-            "status": "failed",
-            "error": str(e.detail)
-        }
+    except HTTPException:
+        raise
     except Exception as e:
         if connection:
             connection.close()
-        GENERATION_JOBS[job_id] = {
-            "status": "failed",
-            "error": f"Error generating questions: {str(e)}"
-        }
+        raise HTTPException(status_code=500, detail=f"Error generating questions: {str(e)}")
 
 
     
@@ -2704,7 +2620,7 @@ def create_question_paper(
         file_path = PAPERS_DIR / filename
         
         # Save file
-        content = paper_content.file.read()
+        content = await paper_content.read()
         with open(file_path, 'wb') as f:
             f.write(content)
         

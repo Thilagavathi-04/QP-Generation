@@ -65,6 +65,9 @@ services:
       PORT: ${PORT:-8010}
       DEBUG: ${DEBUG:-false}
       
+      # Celery/Redis
+      REDIS_URL: redis://redis:6379/0
+      
       # Qdrant
       QDRANT_HOST: qdrant
       QDRANT_PORT: 6333
@@ -129,10 +132,54 @@ services:
     profiles:
       - dev
 
+  # Redis for Celery Task Queue
+  redis:
+    image: redis:7-alpine
+    container_name: quest-redis
+    ports:
+      - "6379:6379"
+    networks:
+      - quest-network
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+  # Celery Worker
+  celery_worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: quest-celery-worker
+    command: celery -A core.celery_app worker --loglevel=info
+    environment:
+      - DB_TYPE=mysql
+      - DB_HOST=mysql
+      - DB_PORT=3306
+      - DB_USER=quest_user
+      - DB_PASSWORD=quest_password
+      - DB_NAME=quest_generator
+      - REDIS_URL=redis://redis:6379/0
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+    volumes:
+      - ./backend/data:/app/data
+      - ./backend/logs:/app/logs
+    depends_on:
+      - mysql
+      - redis
+      - qdrant
+    networks:
+      - quest-network
+    restart: unless-stopped
+
 volumes:
   mysql_data:
     driver: local
   qdrant_storage:
+    driver: local
+  redis_data:
     driver: local
 
 networks:

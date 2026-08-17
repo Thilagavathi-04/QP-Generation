@@ -268,7 +268,7 @@ def get_image_for_question(
         # Strategy 1: Try to get image directly from database
         logger.debug(f"Strategy 1: Searching database...")
         trace.add_step("Database search", f"Trying database keywords: {', '.join(keywords[:5])}")
-        image_data = _search_database_for_image(keywords, used_image_ids)
+        image_data = _search_database_for_image(question_text, keywords, used_image_ids)
         if image_data:
             logger.info(f"✅ Found image in database")
             trace.add_step("Database result", f"Selected {_trace_from_source_type(image_data.get('source_type'))}")
@@ -330,11 +330,61 @@ def get_image_for_question(
         return None
 
 
-def _search_database_for_image(keywords: list, used_image_ids: set) -> Optional[Dict[str, Any]]:
+MIN_IMAGE_MATCH_SCORE = 0.55
+MIN_IMAGE_MATCH_MARGIN = 0.03
+
+def calculate_image_match_score(question_text: str, img: Dict[str, Any], keywords: list) -> float:
+    score = 0.0
+    
+    # Keyword overlap (Max 0.20)
+    haystack = f"{img.get('keywords', '')} {img.get('description', '')} {img.get('caption', '')}".lower()
+    keyword_matches = sum(1 for kw in keywords if kw.lower() in haystack)
+    keyword_score = min(1.0, keyword_matches / max(1, len(keywords)))
+    score += 0.20 * keyword_score
+    
+    # Try semantic similarity if embedding model is available (Max 0.45)
+    semantic_score = 0.0
+    try:
+        from services.qdrant_client import qdrant_manager
+        if qdrant_manager and qdrant_manager.embedding_model:
+            import numpy as np
+            q_vec = qdrant_manager.embedding_model.encode(question_text, normalize_embeddings=True)
+            
+            # Create a rich text representation of the image
+            img_text = f"Caption: {img.get('caption', '')}. Keywords: {img.get('keywords', '')}. Context: {img.get('context', '')[:300]}"
+            img_vec = qdrant_manager.embedding_model.encode(img_text, normalize_embeddings=True)
+            
+            semantic_score = float(np.dot(q_vec, img_vec))
+            semantic_score = max(0.0, min(1.0, semantic_score))
+            score += 0.45 * semantic_score
+        else:
+            score += 0.45 * keyword_score 
+    except Exception as e:
+        logger.debug(f"Semantic scoring failed: {e}")
+        score += 0.45 * keyword_score
+        
+    # Caption exact matching is very strong (Max 0.25)
+    caption = (img.get('caption') or '').lower()
+    caption_score = 0.0
+    if caption:
+        caption_matches = sum(1 for kw in keywords if kw.lower() in caption)
+        caption_score = min(1.0, caption_matches / max(1, len(keywords)))
+    score += 0.25 * caption_score
+    
+    # Source priority penalty (Prefer textbooks, max 0.10)
+    source_type = (img.get('source_type') or '').lower()
+    if source_type in ['pdf_extraction', 'textbook', 'book']:
+        score += 0.10
+        
+    return score
+
+
+def _search_database_for_image(question_text: str, keywords: list, used_image_ids: set) -> Optional[Dict[str, Any]]:
     """
-    Search database for images matching keywords.
+    Search database for images matching keywords and rank them by relevance.
     
     Args:
+        question_text: Original question text for semantic matching
         keywords: List of keywords to search
         used_image_ids: Set of already-used image IDs
         
@@ -345,47 +395,63 @@ def _search_database_for_image(keywords: list, used_image_ids: set) -> Optional[
         from services.image_service import ImageService
         
         candidates = []
+        seen_ids = set()
 
         # Try each keyword to find available images
         for keyword in keywords[:5]:  # Try first 5 keywords
             try:
                 images = ImageService.search_images(keyword, limit=10)
                 
-                logger.info(f"Searching local image database for keyword: {keyword}")
-                
                 if images:
                     for img in images:
                         img_id = img.get('id')
-                        if img_id and img_id in used_image_ids:
+                        if not img_id or img_id in used_image_ids or img_id in seen_ids:
+                            continue
+                            
+                        # Filter out logos/icons
+                        if (img.get('width', 1000) < 150 and img.get('height', 1000) < 150) or "logo" in img.get('keywords', '').lower():
                             continue
 
-                        haystack = f"{img.get('keywords', '')} {img.get('description', '')}".lower()
-                        match_score = 1 if keyword.lower() in haystack else 0
-                        candidates.append((
-                            _source_priority(img.get('source_type')),
-                            -match_score,
-                            -int(img.get('id') or 0),
-                            img,
-                        ))
+                        seen_ids.add(img_id)
+                        
+                        score = calculate_image_match_score(question_text, img, keywords)
+                        candidates.append((score, img))
             except Exception as kw_error:
                 logger.debug(f"Error searching for keyword '{keyword}': {kw_error}")
                 continue
 
         if candidates:
-            candidates.sort(key=lambda item: (item[0], item[1], item[2]))
-            best_img = candidates[0][3]
-            logger.debug(
-                "Selected DB image (priority=%s, source=%s, id=%s)",
-                candidates[0][0],
-                best_img.get('source_type', 'database'),
-                best_img.get('id'),
-            )
+            candidates.sort(key=lambda item: item[0], reverse=True)
+            
+            best_score, best_img = candidates[0]
+            
+            logger.info("--- Image Candidate Scoring ---")
+            logger.info(f"Question: {question_text}")
+            for rank, (score, img) in enumerate(candidates[:3]):
+                logger.info(f"Candidate {rank+1}: score={score:.3f}, source={img.get('source_type')}, caption='{img.get('caption', '')[:30]}', keywords='{img.get('keywords', '')[:30]}'")
+            
+            # 1. Confidence threshold check
+            if best_score < MIN_IMAGE_MATCH_SCORE:
+                logger.warning(f"REJECTED: Best image score ({best_score:.3f}) is below confidence threshold ({MIN_IMAGE_MATCH_SCORE})")
+                return None
+                
+            # 2. Margin check against second best candidate
+            if len(candidates) > 1:
+                second_score, _ = candidates[1]
+                margin = best_score - second_score
+                if margin < MIN_IMAGE_MATCH_MARGIN and second_score > (MIN_IMAGE_MATCH_SCORE - 0.1):
+                    logger.warning(f"REJECTED: Margin ({margin:.3f}) between Top 1 ({best_score:.3f}) and Top 2 ({second_score:.3f}) is too small")
+                    return None
+            
+            logger.info(f"SELECTED: image_id={best_img.get('id')} with score={best_score:.3f}")
+            
             return {
                 "image_blob": best_img.get('image_blob'),
                 "keywords": best_img.get('keywords', ''),
                 "description": best_img.get('description', ''),
+                "caption": best_img.get('caption', ''),
                 "source_type": best_img.get('source_type', 'database'),
-                "confidence": 0.8,
+                "confidence": best_score,
                 "file_name": best_img.get('file_name', 'image.png'),
                 "id": best_img.get('id')
             }

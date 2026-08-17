@@ -17,4 +17,5 @@ Pillow==11.0.0
 bing-image-downloader==1.1.2
 langchain-core==0.1.52
 langgraph==0.0.50
-ddgs
+ddgscelery==5.3.6
+redis==5.0.1

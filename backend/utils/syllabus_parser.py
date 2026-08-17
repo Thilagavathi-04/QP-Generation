@@ -189,49 +189,56 @@ def slice_text_by_units(text: str, unit_anchors: List[Dict]) -> List[Dict]:
 
 # ==================== STEP 5: SPLIT INTO TOPIC CANDIDATES ====================
 def extract_topic_candidates(unit_content: str) -> List[str]:
-    """For each UNIT slice, split content into topic candidates using - , . separators"""
+    """For each UNIT slice, split content into topic candidates"""
     if not unit_content:
         return []
     
     candidates = []
     
-    # Strategy 1: Split by lines and look for topic patterns
-    lines = unit_content.split('\n')
+    # 1. Merge broken lines
+    # Fix hyphenated words broken across lines: "object- \n oriented" -> "object-oriented"
+    text = re.sub(r'-\s*\n\s*', '-', unit_content)
+    # Join remaining lines with a space to fix PDF text wrapping
+    text = re.sub(r'\s*\n\s*', ' ', text)
     
-    for line in lines:
-        line = line.strip()
-        if not line:
+    # 2. Split by periods if they clearly separate items (sentences)
+    sentences = re.split(r'\.\s+', text)
+    
+    for sentence in sentences:
+        sentence = sentence.strip()
+        if not sentence:
             continue
-        
-        # Check if line contains topic separators (-, :, etc.)
-        if any(sep in line for sep in [' - ', ' – ', ': ', ' : ']):
-            # First split by these separators
-            parts = re.split(r'\s*[\-–:]\s*', line)
-            # Then further split each part by commas/semicolons so that
-            # densely packed lists (a, b, c, ...) become individual
-            # topic candidates instead of one long string.
+            
+        # 3. Split by hyphens, en-dashes, and colons
+        # We split on spaces around hyphen, en-dash, colon, or hyphen with a space on one side.
+        # This preserves compound words like "Object-Oriented" which have no spaces around the hyphen.
+        if any(sep in sentence for sep in [' - ', ' – ', ': ', ' : ', '- ', ' -']):
+            parts = re.split(r'\s+-\s+|\s*–\s*|\s*:\s*|-\s+|\s+-', sentence)
             for part in parts:
                 part = part.strip()
                 if not part:
                     continue
+                # Split packed lists separated by commas/semicolons
                 subparts = re.split(r'\s*[,;]\s*', part)
                 candidates.extend([sp.strip() for sp in subparts if sp.strip()])
-        
-        # Split by commas or semicolons (for subtopics) when no -/: present
-        elif any(sep in line for sep in [', ', '; ', ' , ', ' ; ']):
-            parts = re.split(r'\s*[,;]\s*', line)
+                
+        # 4. Split by commas/semicolons if no primary separators exist
+        elif any(sep in sentence for sep in [', ', '; ', ' , ', ' ; ']):
+            parts = re.split(r'\s*[,;]\s*', sentence)
             candidates.extend([p.strip() for p in parts if p.strip()])
-        
-        # Split by periods if they're clearly separating items
-        elif line.count('.') > 1:
-            parts = re.split(r'\.\s+', line)
-            candidates.extend([p.strip() for p in parts if p.strip() and len(p.strip()) > 3])
-        
+            
         else:
-            # Add as single candidate
-            candidates.append(line)
-    
-    return candidates
+            candidates.append(sentence)
+            
+    # 5. Filter out nonsensical fragments
+    filtered_candidates = []
+    for c in candidates:
+        c = c.strip('.,;:-')
+        if len(c) < 3:
+            continue
+        filtered_candidates.append(c)
+        
+    return filtered_candidates
 
 def identify_topics_from_candidates(candidates: List[str]) -> List[Dict]:
     """Identify which candidates are topics vs subtopics"""

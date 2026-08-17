@@ -28,6 +28,12 @@ const QuestionGeneration = () => {
   })
   const [editingPartId, setEditingPartId] = useState(null)
   const [unitRange, setUnitRange] = useState({ from: '', to: '' })
+  const [activeJobId, setActiveJobId] = useState(null)
+  const [pollingStatus, setPollingStatus] = useState('')
+  const [jobPartIndex, setJobPartIndex] = useState(null)
+  const [isAllPartsJob, setIsAllPartsJob] = useState(false)
+  const [isRefreshing, setIsRefreshing] = useState(false)
+
 
   const normalizePart = (part) => {
     const normalized = {
@@ -96,6 +102,151 @@ const QuestionGeneration = () => {
     fetchSubjectData()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [subjectId])
+
+  // Load draft on mount
+  useEffect(() => {
+    if (subjectId) {
+      const saved = localStorage.getItem(`generation_draft_${subjectId}`)
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved)
+          if (parsed.unitRange) setUnitRange(parsed.unitRange)
+          if (parsed.parts) setParts(parsed.parts)
+          if (parsed.activeJobId) setActiveJobId(parsed.activeJobId)
+          if (parsed.jobPartIndex !== undefined) setJobPartIndex(parsed.jobPartIndex)
+          if (parsed.isAllPartsJob !== undefined) setIsAllPartsJob(parsed.isAllPartsJob)
+          if (parsed.isRefreshing !== undefined) setIsRefreshing(parsed.isRefreshing)
+          if (parsed.removedTopicIds) setRemovedTopicIds(new Set(parsed.removedTopicIds))
+        } catch (e) {
+          console.error("Error parsing saved draft", e)
+        }
+      }
+    }
+  }, [subjectId])
+
+  // Save draft on change
+  useEffect(() => {
+    if (subjectId) {
+      localStorage.setItem(`generation_draft_${subjectId}`, JSON.stringify({
+        unitRange,
+        parts,
+        activeJobId,
+        jobPartIndex,
+        isAllPartsJob,
+        isRefreshing,
+        removedTopicIds: Array.from(removedTopicIds)
+      }))
+    }
+  }, [subjectId, unitRange, parts, activeJobId, jobPartIndex, isAllPartsJob, isRefreshing, removedTopicIds])
+
+  // Polling mechanism
+  useEffect(() => {
+    let intervalId;
+    if (activeJobId) {
+      setIsGenerating(true);
+      intervalId = setInterval(async () => {
+        try {
+          const response = await api.get(`/api/jobs/${activeJobId}`);
+          if (response.data.status === 'completed') {
+            clearInterval(intervalId);
+            setIsGenerating(false);
+            setPollingStatus('');
+            
+            if (isAllPartsJob) {
+               const result = response.data.result;
+               if (result && result.success) {
+                 setParts(prev => {
+                   const newParts = [...prev]
+                   result.parts.forEach((partResult, pIndex) => {
+                     if (partResult.success) {
+                        const generatedQuestions = partResult.questions.map((q, i) => ({
+                          id: `${pIndex}-${i}-${Date.now()}-${Math.random()}`,
+                          content: q.content,
+                          unit: q.unit,
+                          topic: q.topic,
+                          difficulty: q.difficulty || newParts[pIndex].difficulty,
+                          marks: q.marks || newParts[pIndex].markPerQuestion,
+                          bloomsLevel: q.blooms_level || null,
+                        }))
+                        if (isRefreshing) {
+                          const selectedQuestions = [...(newParts[pIndex].selectedQuestions || [])]
+                          newParts[pIndex].generatedQuestions = [...selectedQuestions, ...generatedQuestions]
+                        } else {
+                          newParts[pIndex].generatedQuestions = generatedQuestions
+                          newParts[pIndex].selectedQuestions = []
+                        }
+                     }
+                   })
+                   return newParts
+                 })
+                 showToast(`Generated questions successfully!`, 'success')
+               }
+            } else {
+               const result = response.data.result;
+               if (result && result.success) {
+                 const generatedQuestions = result.questions.map((q, i) => ({
+                    id: `${jobPartIndex}-${i}-${Date.now()}-${Math.random()}`,
+                    content: q.content,
+                    unit: q.unit,
+                    topic: q.topic,
+                    // Use standard lookup since difficulty could be absent
+                    difficulty: q.difficulty || "medium",
+                    marks: q.marks || 0,
+                    bloomsLevel: q.blooms_level || null,
+                 }))
+
+                 setParts(prev => {
+                    const newParts = [...prev]
+                    const targetPart = newParts[jobPartIndex] || {}
+                    // fix difficulty/marks fallback
+                    generatedQuestions.forEach(q => {
+                        q.difficulty = q.difficulty === "medium" ? (targetPart.difficulty || "medium") : q.difficulty
+                        q.marks = q.marks === 0 ? (targetPart.markPerQuestion || 0) : q.marks
+                    })
+
+                    if (isRefreshing) {
+                      const selectedQuestions = [...(targetPart.selectedQuestions || [])]
+                      targetPart.generatedQuestions = [...selectedQuestions, ...generatedQuestions]
+                    } else {
+                      targetPart.generatedQuestions = generatedQuestions
+                      targetPart.selectedQuestions = []
+                    }
+                    newParts[jobPartIndex] = targetPart
+                    return newParts
+                 })
+                 showToast(`Generated ${generatedQuestions.length} questions successfully!`, 'success')
+               }
+            }
+            setActiveJobId(null)
+          } else if (response.data.status === 'failed') {
+            clearInterval(intervalId);
+            setIsGenerating(false);
+            setPollingStatus('');
+            setActiveJobId(null);
+            showToast('Failed to generate questions: ' + (response.data.error || 'Unknown error'), 'error', 5000)
+          } else {
+            setPollingStatus('Generating in background (You can safely navigate away)...');
+          }
+        } catch (error) {
+           console.error("Error polling job", error);
+           if (error.response?.status === 404) {
+             clearInterval(intervalId);
+             setIsGenerating(false);
+             setActiveJobId(null);
+             setPollingStatus('');
+             showToast('Job tracking not found. Did you forget to restart the backend?', 'error', 6000);
+           }
+        }
+      }, 3000);
+    } else {
+      setIsGenerating(false);
+      setPollingStatus('');
+    }
+
+    return () => {
+      if (intervalId) clearInterval(intervalId);
+    };
+  }, [activeJobId, isAllPartsJob, jobPartIndex, isRefreshing]);
 
   const fetchSubjectData = async () => {
     try {
@@ -184,11 +335,9 @@ const QuestionGeneration = () => {
       return
     }
 
-    setIsGenerating(true)
-
     const effectiveNeeded = getQuestionsNeeded(parts[partIndex])
     const questionsToGenerate = refresh
-      ? parts[partIndex].questionsNeeded - parts[partIndex].selectedQuestions.length
+      ? parts[partIndex].questionsNeeded - (parts[partIndex].selectedQuestions || []).length
       : parts[partIndex].questionsNeeded
 
     const selectedTopicNames = topics
@@ -204,40 +353,22 @@ const QuestionGeneration = () => {
         difficulty: parts[partIndex].difficulty,
         part_name: parts[partIndex].name,
         ai_provider: aiProvider,
-        topics: selectedTopicNames.length > 0 ? selectedTopicNames : nullplan,
+        topics: selectedTopicNames.length > 0 ? selectedTopicNames : null,
         plan: parts[partIndex].plan && parts[partIndex].plan.length > 0 ? parts[partIndex].plan : undefined,
       })
 
-      if (response.data.success) {
-        const generatedQuestions = response.data.questions.map((q, i) => ({
-          id: `${partIndex}-${i}-${Date.now()}-${Math.random()}`,
-          content: q.content,
-          unit: q.unit,
-          topic: q.topic,
-          difficulty: q.difficulty || parts[partIndex].difficulty,
-          marks: q.marks || parts[partIndex].markPerQuestion,
-          bloomsLevel: q.blooms_level || null,
-        }))
-
-        setParts(prev => {
-          const newParts = [...prev]
-          if (refresh) {
-            const selectedQuestions = [...(newParts[partIndex].selectedQuestions || [])]
-            newParts[partIndex].generatedQuestions = [...selectedQuestions, ...generatedQuestions]
-          } else {
-            newParts[partIndex].generatedQuestions = generatedQuestions
-            newParts[partIndex].selectedQuestions = []
-          }
-          return newParts
-        })
-
-        showToast(`Generated ${generatedQuestions.length} questions successfully!`, 'success')
+      if (response.data.success && response.data.job_id) {
+        setIsAllPartsJob(false)
+        setJobPartIndex(partIndex)
+        setIsRefreshing(refresh)
+        setActiveJobId(response.data.job_id)
+        showToast('Generation started in background', 'info')
+      } else if (response.data.success && !response.data.job_id) {
+        showToast('Backend needs to be restarted to support background generation! Please stop the terminal process and run uv run main.py again.', 'error', 8000)
       }
     } catch (error) {
-      console.error('Error generating questions:', error)
-      showToast('Failed to generate questions: ' + (error.response?.data?.detail || 'Unknown error. Check provider key/model configuration.'), 'error', 5000)
-    } finally {
-      setIsGenerating(false)
+      console.error('Error starting generation:', error)
+      showToast('Failed to start generation: ' + (error.response?.data?.detail || 'Unknown error'), 'error', 5000)
     }
   }
 
@@ -251,8 +382,6 @@ const QuestionGeneration = () => {
       showToast('Please select unit range first', 'warning')
       return
     }
-
-    setIsGenerating(true)
 
     const selectedTopicNames = topics
       .filter(t => !t.deselected)
@@ -280,42 +409,17 @@ const QuestionGeneration = () => {
 
       const response = await api.post(`/api/subjects/${subjectId}/generate-all-questions`, requests)
 
-      if (response.data.success) {
-        setParts(prev => {
-          const newParts = [...prev]
-
-          response.data.parts.forEach((partResult, partIndex) => {
-            if (partResult.success) {
-              const generatedQuestions = partResult.questions.map((q, i) => ({
-                id: `${partIndex}-${i}-${Date.now()}-${Math.random()}`,
-                content: q.content,
-                unit: q.unit,
-                topic: q.topic,
-                difficulty: q.difficulty || newParts[partIndex].difficulty,
-                marks: q.marks || newParts[partIndex].markPerQuestion,
-                bloomsLevel: q.blooms_level || null,
-              }))
-
-              if (refresh) {
-                const selectedQuestions = [...(newParts[partIndex].selectedQuestions || [])]
-                newParts[partIndex].generatedQuestions = [...selectedQuestions, ...generatedQuestions]
-              } else {
-                newParts[partIndex].generatedQuestions = generatedQuestions
-                newParts[partIndex].selectedQuestions = []
-              }
-            }
-          })
-
-          return newParts
-        })
-
-        showToast(`Generated questions for ${response.data.parts.filter(p => p.success).length} parts successfully!`, 'success')
+      if (response.data.success && response.data.job_id) {
+        setIsAllPartsJob(true)
+        setIsRefreshing(refresh)
+        setActiveJobId(response.data.job_id)
+        showToast('Generation for all parts started in background', 'info')
+      } else if (response.data.success && !response.data.job_id) {
+        showToast('Backend needs to be restarted to support background generation! Please stop the terminal process and run uv run main.py again.', 'error', 8000)
       }
     } catch (error) {
-      console.error('Error generating all questions:', error)
-      showToast('Failed to generate questions: ' + (error.response?.data?.detail || 'Unknown error. Check provider key/model configuration.'), 'error', 5000)
-    } finally {
-      setIsGenerating(false)
+      console.error('Error starting generation:', error)
+      showToast('Failed to start generation: ' + (error.response?.data?.detail || 'Unknown error'), 'error', 5000)
     }
   }
 
@@ -727,6 +831,13 @@ const QuestionGeneration = () => {
                 )
               })}
             </div>
+          </div>
+        )}
+
+        {pollingStatus && (
+          <div className="alert alert-info" style={{ marginTop: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <RefreshCw className="spin" size={16} />
+            {pollingStatus}
           </div>
         )}
 

@@ -8,6 +8,7 @@ import os
 import re
 import sys
 import tempfile
+import hashlib
 from pathlib import Path
 from typing import List, Dict, Any, Tuple
 import fitz  # PyMuPDF
@@ -29,6 +30,43 @@ except ImportError:
         logger = logging.getLogger(__name__)
         logger.warning("Could not import rag_config logger")
         flip_image_vertically = None
+
+
+def is_valid_extracted_image(width: int, height: int) -> bool:
+    """Filter out obvious unwanted images like tiny icons, lines, and borders."""
+    if width < 80 or height < 80:
+        return False
+    
+    area = width * height
+    if area < 15000:
+        return False
+        
+    aspect_ratio = width / height if height > 0 else 1.0
+    # Extreme aspect ratios (e.g. very wide line or very tall border)
+    if aspect_ratio > 4.5 or aspect_ratio < 0.22:
+        return False
+        
+    return True
+
+def extract_caption_from_context(context_text: str) -> str:
+    """Find a caption like 'Fig 1.2 ...' in the nearby text."""
+    if not context_text:
+        return ""
+    pattern = r'(?i)(?:fig\.?|figure|table)\s*\d+(?:\.\d+)*\s*[^\n]{0,100}'
+    matches = re.finditer(pattern, context_text)
+    for match in matches:
+        caption = match.group(0).strip()
+        if len(caption) > 8:
+            # truncate if too long
+            return caption[:150]
+    return ""
+
+def determine_image_type(keywords_str: str) -> str:
+    """Basic heuristic to guess if it's a diagram or photo."""
+    text = keywords_str.lower()
+    if "diagram" in text or "graph" in text or "chart" in text or "plot" in text:
+        return "diagram"
+    return "image"
 
 
 def detect_and_fix_rotation(img: Image.Image) -> Image.Image:
@@ -375,6 +413,11 @@ def extract_images_and_text_from_pdf(pdf_path: str) -> Dict[str, Any]:
                     else:  # Grayscale
                         mode = 'L'
                     
+                    
+                    if not is_valid_extracted_image(pix.width, pix.height):
+                        pix = None
+                        continue
+                    
                     pil_img = Image.frombytes(
                         mode,
                         (pix.width, pix.height),
@@ -408,12 +451,17 @@ def extract_images_and_text_from_pdf(pdf_path: str) -> Dict[str, Any]:
                     pil_img.save(output, format='PNG', compress_level=6)
                     img_blob = output.getvalue()
                     
+                    # Generate hash to prevent duplicate insertions from same PDF
+                    img_hash = hashlib.sha256(img_blob).hexdigest()
+                    
                     # Apply vertical flip before saving to database
                     if flip_image_vertically:
                         img_blob = flip_image_vertically(img_blob)
                     
                     # Generate keywords with context
                     keywords, description = generate_image_keywords(img_blob, context_text)
+                    caption = extract_caption_from_context(context_text)
+                    img_type = determine_image_type(keywords + " " + description + " " + caption)
                     
                     images_with_context.append({
                         "image_blob": img_blob,
@@ -422,6 +470,9 @@ def extract_images_and_text_from_pdf(pdf_path: str) -> Dict[str, Any]:
                         "keywords": keywords,
                         "description": description,
                         "context": context_text,
+                        "caption": caption,
+                        "image_type": img_type,
+                        "hash": img_hash,
                         "source_type": "pdf_extraction"
                     })
                     
@@ -435,11 +486,21 @@ def extract_images_and_text_from_pdf(pdf_path: str) -> Dict[str, Any]:
         
     except Exception as e:
         logger.error(f"Error processing PDF {pdf_path}: {e}")
-    
+    # Deduplicate images by hash (only keep one instance of repeated images like logos per PDF)
+    unique_images = []
+    seen_hashes = set()
+    for img_data in images_with_context:
+        img_hash = img_data.get("hash")
+        if img_hash and img_hash not in seen_hashes:
+            seen_hashes.add(img_hash)
+            unique_images.append(img_data)
+        elif not img_hash:
+            unique_images.append(img_data)
+            
     return {
         "text": full_text,
-        "images": images_with_context,
-        "total_images": len(images_with_context)
+        "images": unique_images,
+        "total_images": len(unique_images)
     }
 
 
@@ -503,6 +564,8 @@ def ingest_pdf_images_to_database(pdf_path: str, source_reference_prefix: str = 
             image_id = ImageService.save_image(
                 keywords=keywords,
                 description=image_data.get("description", "Book image"),
+                caption=image_data.get("caption", ""),
+                context=image_data.get("context", ""),
                 image_blob=image_blob,
                 source_type="pdf_extraction",
                 source_reference=f"{source_reference_prefix}:{image_data.get('source_reference', '')}",

@@ -3,6 +3,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 import mysql.connector
 from mysql.connector import Error
+import mysql.connector.pooling
 
 # Calculate base directory relative to this file
 CORE_DIR = Path(__file__).resolve().parent
@@ -39,8 +40,55 @@ def get_cursor(connection):
     """Create and return a cursor for MySQL with dictionary=True"""
     return connection.cursor(dictionary=True)
 
+db_pool = None
+
+def init_connection_pool():
+    global db_pool
+    if db_pool is None:
+        try:
+            db_pool = mysql.connector.pooling.MySQLConnectionPool(
+                pool_name="quest_pool",
+                pool_size=10,
+                pool_reset_session=True,
+                host=os.getenv('DB_HOST', '127.0.0.1'),
+                port=int(os.getenv('DB_PORT', 3306)),
+                user=os.getenv('DB_USER', 'root'),
+                password=os.getenv('DB_PASSWORD', ''),
+                database=os.getenv('DB_NAME', 'quest_generator')
+            )
+            print("Database connection pool created successfully.")
+        except Error as e:
+            print(f"Error creating connection pool: {e}")
+
+def _safe_connection_wrapper(conn):
+    if not conn:
+        return conn
+    original_close = conn.close
+    def safe_close():
+        if getattr(conn, "_is_safely_closed", False):
+            return
+        try:
+            original_close()
+        except Exception as e:
+            print(f"Warning: safe_close caught error: {e}")
+        finally:
+            conn._is_safely_closed = True
+    conn.close = safe_close
+    return conn
+
 def get_db_connection():
-    """Create and return a MySQL database connection"""
+    """Create and return a MySQL database connection from the pool"""
+    global db_pool
+    if db_pool is None:
+        init_connection_pool()
+        
+    if db_pool:
+        try:
+            return _safe_connection_wrapper(db_pool.get_connection())
+        except Error as e:
+            print(f"Error getting connection from pool: {e}")
+            
+    # Fallback to direct connection if pool fails
     try:
         connection = mysql.connector.connect(
             host=os.getenv('DB_HOST', '127.0.0.1'),
@@ -49,9 +97,9 @@ def get_db_connection():
             password=os.getenv('DB_PASSWORD', ''),
             database=os.getenv('DB_NAME', 'quest_generator')
         )
-        return connection
+        return _safe_connection_wrapper(connection)
     except Error as e:
-        print(f"Error connecting to MySQL: {e}")
+        print(f"Error connecting to MySQL (fallback): {e}")
         return None
 
 def migrate_database():
@@ -124,6 +172,8 @@ def migrate_database():
                     id INT AUTO_INCREMENT PRIMARY KEY,
                     keywords TEXT NOT NULL,
                     description TEXT NOT NULL,
+                    caption TEXT,
+                    context TEXT,
                     image_blob LONGBLOB NOT NULL,
                     source_type VARCHAR(100),
                     source_reference VARCHAR(500),
@@ -145,6 +195,8 @@ def migrate_database():
 
         # Add image file metadata columns if missing
         image_columns = [
+            ('caption', 'TEXT'),
+            ('context', 'TEXT'),
             ('file_path', 'VARCHAR(1000)'),
             ('file_hash', 'VARCHAR(64)'),
             ('mime_type', 'VARCHAR(100)'),
@@ -395,6 +447,8 @@ def init_database():
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 keywords TEXT NOT NULL,
                 description TEXT NOT NULL,
+                caption TEXT,
+                context TEXT,
                 image_blob LONGBLOB NOT NULL,
                 source_type VARCHAR(100),
                 source_reference VARCHAR(500),

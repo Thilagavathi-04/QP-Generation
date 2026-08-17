@@ -20,6 +20,9 @@ dependencies = [
     "qdrant-client",
     "email-validator",
     "sentence-transformers",
-    "ddgs>=9.14.4",
+    "celery",
+    "redis",
     "matplotlib>=3.10.9",
+    "ddgs>=9.15.0",
+    "pyjwt>=2.13.0",
 ]

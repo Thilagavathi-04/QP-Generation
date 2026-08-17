@@ -52,6 +52,102 @@ BLOOMS_LABEL = {
     "C": "Create",
 }
 
+def _add_docx_question(doc, content: str, q_num: int):
+    # Special parsing for Match the Following
+    if re.match(r"(?i)^\s*match\s+the\s+following", content) and "\n" in content:
+        lines = content.split('\n')
+        intro_text = []
+        pairs = []
+        for line in lines:
+            if re.match(r"^\d+\)\s*.+\s*-\s*.+$", line.strip()):
+                parts = line.split('-', 1)
+                pairs.append((parts[0].strip(), parts[1].strip()))
+            else:
+                intro_text.append(line.strip())
+        
+        q_para = doc.add_paragraph()
+        q_para.paragraph_format.left_indent = Inches(0.4)
+        r_num = q_para.add_run(f"{q_num}. ")
+        r_num.bold = True
+        
+        intro_str = "\n".join([t for t in intro_text if t])
+        q_para.add_run(intro_str)
+        
+        if pairs:
+            # We want to create a table but it needs to be indented
+            table = doc.add_table(rows=0, cols=2)
+            table.autofit = False
+            # set column widths
+            table.columns[0].width = Inches(2.5)
+            table.columns[1].width = Inches(2.5)
+            
+            for left, right in pairs:
+                row_cells = table.add_row().cells
+                row_cells[0].text = left
+                row_cells[1].text = right
+                # add left indent to cell paragraphs so it aligns nicely
+                for cell in row_cells:
+                    for p in cell.paragraphs:
+                        p.paragraph_format.left_indent = Inches(0.8)
+            return
+
+    # Default handling for regular questions
+    q_para = doc.add_paragraph()
+    q_para.paragraph_format.left_indent = Inches(0.4)
+    r_num = q_para.add_run(f"{q_num}. ")
+    r_num.bold = True
+    
+    # Python-docx requires explicit line breaks if we want \n to work natively
+    if "\n" in content:
+        lines = content.split('\n')
+        q_para.add_run(lines[0])
+        for line in lines[1:]:
+            q_para.add_run('\n' + line)
+    else:
+        q_para.add_run(content)
+
+
+def _add_pdf_question(elements, content: str, q_num: int, normal_style):
+    if re.match(r"(?i)^\s*match\s+the\s+following", content) and "\n" in content:
+        lines = content.split('\n')
+        intro_text = []
+        pairs = []
+        for line in lines:
+            if re.match(r"^\d+\)\s*.+\s*-\s*.+$", line.strip()):
+                parts = line.split('-', 1)
+                pairs.append([Paragraph(parts[0].strip(), normal_style), Paragraph(parts[1].strip(), normal_style)])
+            else:
+                intro_text.append(line.strip())
+                
+        intro_str = f"<b>{q_num}.</b> " + "<br/>".join([t for t in intro_text if t])
+        elements.append(Paragraph(intro_str, normal_style))
+        elements.append(Spacer(1, 0.05*inch))
+        
+        if pairs:
+            # Create a 2-column table for match the following
+            t = Table(pairs, colWidths=[2.5*inch, 2.5*inch])
+            t.setStyle(TableStyle([
+                ('ALIGN', (0,0), (-1,-1), 'LEFT'),
+                ('VALIGN', (0,0), (-1,-1), 'TOP'),
+                ('BOTTOMPADDING', (0,0), (-1,-1), 4),
+                ('LEFTPADDING', (0,0), (-1,-1), 0),
+            ]))
+            
+            # Put it in another table to indent it from the left margin
+            indent_table = Table([["", t]], colWidths=[0.3*inch, 5.0*inch])
+            indent_table.setStyle(TableStyle([
+                ('LEFTPADDING', (0,0), (-1,-1), 0),
+                ('RIGHTPADDING', (0,0), (-1,-1), 0),
+            ]))
+            elements.append(indent_table)
+            elements.append(Spacer(1, 0.1*inch))
+            return
+            
+    # Default handling: replace \n with <br/> for ReportLab
+    formatted_text = f"<b>{q_num}.</b> " + content.replace('\n', '<br/>')
+    elements.append(Paragraph(formatted_text, normal_style))
+    elements.append(Spacer(1, 0.1*inch))
+
 
 def _blooms_code_from_marks(marks: float) -> str:
     try:
@@ -641,11 +737,7 @@ def generate_docx_paper(
         
         # Questions
         for q in part_questions:
-            q_para = doc.add_paragraph()
-            q_para.paragraph_format.left_indent = Inches(0.4)
-            r_num = q_para.add_run(f"{question_number}. ")
-            r_num.bold = True
-            q_para.add_run(q['content'])
+            _add_docx_question(doc, q['content'], question_number)
             
             # Try to fetch and insert image for this question
             try:
@@ -786,8 +878,8 @@ def generate_pdf_paper(
     # Container for the 'Flowable' objects
     elements = []
     
-    # Check for logo file
-    logo_path = Path(__file__).resolve().parent.parent / "data" / "static" / "logo.png"
+    # Check for logo file in frontend/public
+    logo_path = Path(__file__).resolve().parent.parent.parent / "backend" / "data" / "logo.png"
     has_logo = logo_path.exists()
     
     # Styles
@@ -907,21 +999,67 @@ def generate_pdf_paper(
     
     # Reg No Boxes implementation
     reg_no_cells = [[" " for _ in range(12)]]
-    reg_table = Table(reg_no_cells, colWidths=[0.2*inch]*12, rowHeights=[0.25*inch])
+
+    reg_table = Table(
+        reg_no_cells,
+        colWidths=[0.2 * inch] * 12,
+        rowHeights=[0.25 * inch]
+    )
+
     reg_table.setStyle(TableStyle([
         ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
         ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
         ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
     ]))
-    
+
+    right_small_style = ParagraphStyle(
+        'RightSmall',
+        parent=small_style,
+        alignment=2
+    )
+
+    # Reg No text + boxes
+    reg_group = Table(
+        [
+            [Paragraph("Reg No "+" ", right_small_style), reg_table]
+        ],
+        colWidths=[0.8 * inch, 2.4 * inch],
+        hAlign='LEFT'          # ← moves the whole group to the left
+    )
+
+    reg_group.setStyle(TableStyle([
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('ALIGN', (0, 0), (0, 0), 'RIGHT'),
+        ('ALIGN', (1, 0), (1, 0), 'RIGHT'),
+
+        ('LEFTPADDING', (0, 0), (-1, -1), 0),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+    ]))
     meta_data = [
-        [Paragraph(f"<b>Date:</b> {date_str}", small_style), 
-         Paragraph("<b>Reg No</b>", small_style), reg_table]
+        [Paragraph(f"Date: {date_str}", small_style), reg_group]
     ]
-    meta_table = Table(meta_data, colWidths=[2.5*inch, 1*inch, 3*inch])
+    
+    # ---------------------------------------------------------
+    # HOW TO MOVE THE REG NO BOX LEFT OR RIGHT:
+    # 
+    # The 'colWidths' array below controls the width of the two columns:
+    # 1. Date column (currently 4.15*inch)
+    # 2. Reg No Group column (currently 3.0*inch)
+    #
+    # Because the table is centered on the page, increasing the total 
+    # width pushes the right side further to the right. 
+    # 
+    # Try increasing '4.15*inch' to '4.2*inch' or '4.3*inch' if you 
+    # want the box pushed even further to the right. 
+    # Try decreasing it to '4.0*inch' to move it left.
+    # ---------------------------------------------------------
+    meta_table = Table(meta_data, colWidths=[4.0*inch, 3.0*inch])
     meta_table.setStyle(TableStyle([
         ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('ALIGN', (0, 0), (0, 0), 'LEFT'),
         ('ALIGN', (1, 0), (1, 0), 'RIGHT'),
+        ('LEFTPADDING', (0, 0), (0, 0), 2),
+        ('RIGHTPADDING', (1, 0), (1, 0), 0), # 0 padding forces it to touch the absolute right boundary
     ]))
     
     elements.append(meta_table)
@@ -932,12 +1070,12 @@ def generate_pdf_paper(
     elements.append(Paragraph(exam_title_text, exam_title_style))
 
     # Optional second line from title (e.g., semester/regulation)
-    if title:
-        elements.append(Paragraph(title, sub_title_style))
+    # if title:
+    #     elements.append(Paragraph(title, sub_title_style))
 
     # Subject code + name line like "21OCE02 – Disaster Preparedness and Management"
     if subject_code:
-        elements.append(Paragraph(f"{subject_code} \\u2013 {subject_name}", sub_title_style))
+        elements.append(Paragraph(f"{subject_code}-{subject_name}", sub_title_style))
     else:
         elements.append(Paragraph(f"Subject: {subject_name}", sub_title_style))
     
@@ -946,13 +1084,13 @@ def generate_pdf_paper(
         [Paragraph(f"Time: {duration} hours", small_style), 
          Paragraph(f"Maximum: {total_marks} Marks", small_style)]
     ]
-    tm_table = Table(time_marks, colWidths=[3.5*inch, 3.5*inch])
+    tm_table = Table(time_marks, colWidths=[5.9*inch, 0.9*inch])
     tm_table.setStyle(TableStyle([
         ('ALIGN', (1, 0), (1, 0), 'RIGHT'),
     ]))
     elements.append(tm_table)
     elements.append(Spacer(1, 0.1*inch))
-    elements.append(Paragraph("_" * 105, normal_style))
+    elements.append(Paragraph("_" * 80, normal_style))
     elements.append(Spacer(1, 0.15*inch))
     
     # Instructions
@@ -987,9 +1125,7 @@ def generate_pdf_paper(
         
         # Questions
         for q in part_questions:
-            q_text = f"<b>{question_number}.</b> {q['content']}"
-            elements.append(Paragraph(q_text, normal_style))
-            elements.append(Spacer(1, 0.1*inch))
+            _add_pdf_question(elements, q['content'], question_number, normal_style)
             
             # Try to fetch and insert image for this question
             temp_image_paths = []

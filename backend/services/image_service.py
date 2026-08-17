@@ -117,6 +117,8 @@ class ImageService:
         keywords: str,
         description: str,
         image_blob: bytes,
+        caption: str = "",
+        context: str = "",
         source_type: str = "pdf_extraction",
         source_reference: str = None,
         file_name: str = None,
@@ -158,8 +160,8 @@ class ImageService:
             resolved_file_name = file_name or Path(rel_path).name
             query = f"""
                 INSERT INTO question_images
-                (keywords, description, image_blob, source_type, source_reference, file_name, file_path, file_hash, mime_type, width, height)
-                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})
+                (keywords, description, caption, context, image_blob, source_type, source_reference, file_name, file_path, file_hash, mime_type, width, height)
+                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})
             """
 
             cursor.execute(
@@ -167,6 +169,8 @@ class ImageService:
                 [
                     keywords,
                     description,
+                    caption,
+                    context,
                     image_blob,
                     source_type,
                     source_reference,
@@ -226,7 +230,7 @@ class ImageService:
             params.append(f"%{kw}%")
 
         query = f"""
-            SELECT id, keywords, description, image_blob, source_type, source_reference,
+            SELECT id, keywords, description, caption, context, image_blob, source_type, source_reference,
                    file_name, file_path, file_hash, mime_type, width, height
             FROM question_images
             WHERE {' OR '.join(conditions)}
@@ -240,7 +244,7 @@ class ImageService:
     def get_image_by_description(description: str, limit: int = 5) -> List[Dict[str, Any]]:
         placeholder = get_placeholder()
         query = f"""
-            SELECT id, keywords, description, image_blob, source_type, source_reference,
+            SELECT id, keywords, description, caption, context, image_blob, source_type, source_reference,
                    file_name, file_path, file_hash, mime_type, width, height
             FROM question_images
             WHERE description LIKE {placeholder}
@@ -253,7 +257,7 @@ class ImageService:
     def get_image_by_id(image_id: int) -> Optional[Dict[str, Any]]:
         placeholder = get_placeholder()
         query = f"""
-            SELECT id, keywords, description, image_blob, source_type, source_reference,
+            SELECT id, keywords, description, caption, context, image_blob, source_type, source_reference,
                    file_name, file_path, file_hash, mime_type, width, height
             FROM question_images
             WHERE id = {placeholder}
@@ -275,7 +279,7 @@ class ImageService:
         if not query_terms:
             pattern = f"%{query}%"
             sql = f"""
-                SELECT id, keywords, description, image_blob, source_type, source_reference,
+                SELECT id, keywords, description, caption, context, image_blob, source_type, source_reference,
                        file_name, file_path, file_hash, mime_type, width, height
                 FROM question_images
                 WHERE keywords LIKE {placeholder} OR description LIKE {placeholder}
@@ -293,7 +297,7 @@ class ImageService:
 
         where_clause = " OR ".join(conditions)
         sql = f"""
-            SELECT id, keywords, description, image_blob, source_type, source_reference,
+            SELECT id, keywords, description, caption, context, image_blob, source_type, source_reference,
                    file_name, file_path, file_hash, mime_type, width, height
             FROM question_images
             WHERE {where_clause}
@@ -346,7 +350,7 @@ class ImageService:
     def get_all_images(limit: int = 100) -> List[Dict[str, Any]]:
         placeholder = get_placeholder()
         query = f"""
-            SELECT id, keywords, description, source_type, source_reference,
+            SELECT id, keywords, description, caption, context, source_type, source_reference,
                    file_name, file_path, file_hash, mime_type, width, height
             FROM question_images
             ORDER BY created_at DESC

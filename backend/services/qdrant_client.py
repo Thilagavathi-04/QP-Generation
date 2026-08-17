@@ -34,7 +34,7 @@ class QdrantManager:
                 https=QDRANT_HTTPS,
             )
             self.embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
-            self.vector_size = self.embedding_model.get_sentence_embedding_dimension()
+            self.vector_size = self.embedding_model.get_embedding_dimension()
             self.collection_name = QDRANT_COLLECTION_NAME
             self._ensure_collection()
             logger.info(
