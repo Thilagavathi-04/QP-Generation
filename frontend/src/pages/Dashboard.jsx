@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import { Plus, BookOpen, FileText, Archive, TrendingUp, Database, Layout } from 'lucide-react'
 import axios from 'axios'
 
-const API_URL = 'http://127.0.0.1:8010'
+const API_URL = import.meta.env.VITE_API_URL || import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8010'
 
 const Dashboard = () => {
   const navigate = useNavigate()

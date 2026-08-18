@@ -52,8 +52,8 @@ def init_connection_pool():
                 pool_reset_session=True,
                 host=os.getenv('DB_HOST', '127.0.0.1'),
                 port=int(os.getenv('DB_PORT', 3306)),
-                user=os.getenv('DB_USER', 'root'),
-                password=os.getenv('DB_PASSWORD', ''),
+                user=os.getenv('DB_USER', 'quest_user'),
+                password=os.getenv('DB_PASSWORD', 'quest_pass'),
                 database=os.getenv('DB_NAME', 'quest_generator')
             )
             print("Database connection pool created successfully.")
@@ -93,8 +93,8 @@ def get_db_connection():
         connection = mysql.connector.connect(
             host=os.getenv('DB_HOST', '127.0.0.1'),
             port=int(os.getenv('DB_PORT', 3306)),
-            user=os.getenv('DB_USER', 'root'),
-            password=os.getenv('DB_PASSWORD', ''),
+            user=os.getenv('DB_USER', 'quest_user'),
+            password=os.getenv('DB_PASSWORD', 'quest_pass'),
             database=os.getenv('DB_NAME', 'quest_generator')
         )
         return _safe_connection_wrapper(connection)
@@ -238,26 +238,37 @@ def migrate_database():
 
 def init_database():
     """Initialize MySQL database and create tables if they don't exist"""
+    db_name = os.getenv('DB_NAME', 'quest_generator')
     try:
-        # First connect without database to create it
-        connection = mysql.connector.connect(
-            host=os.getenv('DB_HOST', '127.0.0.1'),
-            port=int(os.getenv('DB_PORT', 3306)),
-            user=os.getenv('DB_USER', 'root'),
-            password=os.getenv('DB_PASSWORD', '')
-        )
-        cursor = connection.cursor()
+        # Try to connect directly to the database first
+        try:
+            connection = mysql.connector.connect(
+                host=os.getenv('DB_HOST', '127.0.0.1'),
+                port=int(os.getenv('DB_PORT', 3306)),
+                user=os.getenv('DB_USER', 'quest_user'),
+                password=os.getenv('DB_PASSWORD', 'quest_pass'),
+                database=db_name
+            )
+            # Database exists, proceed to create tables
+            cursor = connection.cursor()
+        except Error:
+            # Fallback: connect without database to create it
+            connection = mysql.connector.connect(
+                host=os.getenv('DB_HOST', '127.0.0.1'),
+                port=int(os.getenv('DB_PORT', 3306)),
+                user=os.getenv('DB_USER', 'quest_user'),
+                password=os.getenv('DB_PASSWORD', 'quest_pass')
+            )
+            cursor = connection.cursor()
+            cursor.execute(f"CREATE DATABASE IF NOT EXISTS {db_name}")
+            cursor.close()
+            connection.close()
 
-        # Create database if it doesn't exist
-        cursor.execute(f"CREATE DATABASE IF NOT EXISTS {os.getenv('DB_NAME', 'quest_generator')}")
-        cursor.close()
-        connection.close()
-
-        # Now connect to the database
-        connection = get_db_connection()
-        if not connection:
-            return False
-        cursor = get_cursor(connection)
+            # Now connect to the database
+            connection = get_db_connection()
+            if not connection:
+                return False
+            cursor = get_cursor(connection)
 
         # Create subjects table
         cursor.execute("""

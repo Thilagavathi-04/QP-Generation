@@ -1,187 +1,353 @@
-version: '3.8'
-
 services:
-  # MySQL Database Service
+
+  # ============================================================
+  # MySQL
+  # ============================================================
   mysql:
     image: mysql:8.0
     container_name: quest-mysql
     restart: unless-stopped
+
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root123}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-quest_root_123}
       MYSQL_DATABASE: ${DB_NAME:-quest_generator}
       MYSQL_USER: ${DB_USER:-quest_user}
       MYSQL_PASSWORD: ${DB_PASSWORD:-quest_pass}
+
+    # Host 13306 -> Container 3306
+    # This avoids conflict with your existing MariaDB/MySQL on 3306
     ports:
-      - "${DB_PORT:-3306}:3306"
+      - "${MYSQL_HOST_PORT:-13306}:3306"
+
     volumes:
-      - mysql_data:/var/lib/mysql
+      - quest_mysql_data:/var/lib/mysql
+
     networks:
       - quest-network
-    healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
-      timeout: 20s
-      retries: 10
-      interval: 10s
-    command: --default-authentication-plugin=mysql_native_password
 
-  # Qdrant Vector Database Service
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "mysqladmin ping -h localhost -u root -p$${MYSQL_ROOT_PASSWORD} --silent"
+        ]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+
+  # ============================================================
+  # Qdrant
+  # ============================================================
   qdrant:
     image: qdrant/qdrant:latest
     container_name: quest-qdrant
     restart: unless-stopped
+
+    # Host 16333 -> Container 6333
     ports:
-      - "${QDRANT_PORT:-6333}:6333"
+      - "${QDRANT_HOST_PORT:-16333}:6333"
+
     volumes:
-      - qdrant_storage:/qdrant/storage
+      - quest_qdrant_data:/qdrant/storage
+
     networks:
       - quest-network
-    environment:
-      QDRANT_API_KEY: ${QDRANT_API_KEY:-your-secret-key}
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
-      timeout: 10s
-      retries: 5
-      interval: 10s
 
-  # FastAPI Backend Service
+    environment:
+      QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY:-}
+
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget --spider -q http://localhost:6333/healthz || exit 1"
+        ]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 15s
+
+
+  # ============================================================
+  # Redis
+  # ============================================================
+  redis:
+    image: redis:7-alpine
+    container_name: quest-redis
+    restart: unless-stopped
+
+    # Host 16379 -> Container 6379
+    ports:
+      - "${REDIS_HOST_PORT:-16379}:6379"
+
+    volumes:
+      - quest_redis_data:/data
+
+    networks:
+      - quest-network
+
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "redis-cli",
+          "ping"
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+
+  # ============================================================
+  # FastAPI Backend
+  # ============================================================
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
+
     container_name: quest-backend
     restart: unless-stopped
+
+    # Host 18010 -> Container 8010
     ports:
-      - "${PORT:-8010}:${PORT:-8010}"
+      - "${BACKEND_HOST_PORT:-18010}:8010"
+
     environment:
-      # Database
+
+      # --------------------------------------------------------
+      # Application
+      # --------------------------------------------------------
+      PORT: 8010
+      DEBUG: ${DEBUG:-false}
+
+      # --------------------------------------------------------
+      # MySQL
+      # IMPORTANT:
+      # Inside Docker use service name "mysql"
+      # --------------------------------------------------------
       DB_TYPE: mysql
       DB_HOST: mysql
       DB_PORT: 3306
       DB_USER: ${DB_USER:-quest_user}
       DB_PASSWORD: ${DB_PASSWORD:-quest_pass}
       DB_NAME: ${DB_NAME:-quest_generator}
-      
-      # Server
-      PORT: ${PORT:-8010}
-      DEBUG: ${DEBUG:-false}
-      
-      # Celery/Redis
+
+      # --------------------------------------------------------
+      # Redis
+      # --------------------------------------------------------
       REDIS_URL: redis://redis:6379/0
-      
+
+      # --------------------------------------------------------
       # Qdrant
+      # IMPORTANT:
+      # Inside Docker use service name "qdrant"
+      # --------------------------------------------------------
       QDRANT_HOST: qdrant
       QDRANT_PORT: 6333
-      QDRANT_API_KEY: ${QDRANT_API_KEY:-your-secret-key}
-      QDRANT_HTTPS: false
-      
-      # AI Configuration
-      AI_MODE: ${AI_MODE:-hybrid}
+      QDRANT_API_KEY: ${QDRANT_API_KEY:-}
+      QDRANT_HTTPS: "false"
+
+      # --------------------------------------------------------
+      # Ollama running on HOST
+      # --------------------------------------------------------
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-mistral:latest}
-      
+
+      # --------------------------------------------------------
+      # xAI
+      # --------------------------------------------------------
       XAI_BASE_URL: ${XAI_BASE_URL:-https://api.x.ai/v1}
       XAI_MODEL: ${XAI_MODEL:-grok-2-latest}
-      XAI_API_KEY: ${XAI_API_KEY:-your_xai_api_key_here}
-      
+      XAI_API_KEY: ${XAI_API_KEY:-}
+
+      # --------------------------------------------------------
+      # OpenAI
+      # --------------------------------------------------------
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-your_openai_api_key_here}
-      
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+
+      # --------------------------------------------------------
+      # Gemini
+      # --------------------------------------------------------
       GEMINI_BASE_URL: ${GEMINI_BASE_URL:-https://generativelanguage.googleapis.com/v1beta}
       GEMINI_MODEL: ${GEMINI_MODEL:-gemini-1.5-flash}
-      GEMINI_API_KEY: ${GEMINI_API_KEY:-your_gemini_api_key_here}
-      
-      # Stable Diffusion (optional)
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+
+      # --------------------------------------------------------
+      # Stable Diffusion
+      # --------------------------------------------------------
       SD_ENABLED: ${SD_ENABLED:-false}
       SD_BASE_URL: ${SD_BASE_URL:-http://host.docker.internal:7860}
       SD_T2I_ENDPOINT: ${SD_T2I_ENDPOINT:-/sdapi/v1/txt2img}
-    
+
     volumes:
       - ./backend/data:/app/data
       - ./backend/logs:/app/logs
+
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
     depends_on:
       mysql:
         condition: service_healthy
+
       qdrant:
         condition: service_healthy
+
+      redis:
+        condition: service_healthy
+
     networks:
       - quest-network
+
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:${PORT:-8010}/docs"]
-      timeout: 10s
-      retries: 5
+      test:
+        [
+          "CMD-SHELL",
+          "curl -f http://localhost:8010/docs || exit 1"
+        ]
       interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
 
-  # React Frontend Service (optional - for development)
-  frontend:
-    image: node:18-alpine
-    container_name: quest-frontend
-    working_dir: /app
-    command: npm run dev
-    ports:
-      - "5173:5173"
-    volumes:
-      - ./frontend:/app
-      - /app/node_modules
-    networks:
-      - quest-network
-    environment:
-      VITE_API_URL: http://backend:${PORT:-8010}
-    depends_on:
-      - backend
-    profiles:
-      - dev
 
-  # Redis for Celery Task Queue
-  redis:
-    image: redis:7-alpine
-    container_name: quest-redis
-    ports:
-      - "6379:6379"
-    networks:
-      - quest-network
-    volumes:
-      - redis_data:/data
-    restart: unless-stopped
-
+  # ============================================================
   # Celery Worker
+  # ============================================================
   celery_worker:
     build:
       context: ./backend
       dockerfile: Dockerfile
+
     container_name: quest-celery-worker
-    command: celery -A core.celery_app worker --loglevel=info
+    restart: unless-stopped
+
+    command:
+      - uv
+      - run
+      - celery
+      - -A
+      - core.celery_app
+      - worker
+      - --loglevel=info
+
     environment:
-      - DB_TYPE=mysql
-      - DB_HOST=mysql
-      - DB_PORT=3306
-      - DB_USER=quest_user
-      - DB_PASSWORD=quest_password
-      - DB_NAME=quest_generator
-      - REDIS_URL=redis://redis:6379/0
-      - QDRANT_HOST=qdrant
-      - QDRANT_PORT=6333
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
+
+      # MySQL
+      DB_TYPE: mysql
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_USER: ${DB_USER:-quest_user}
+      DB_PASSWORD: ${DB_PASSWORD:-quest_pass}
+      DB_NAME: ${DB_NAME:-quest_generator}
+
+      # Redis
+      REDIS_URL: redis://redis:6379/0
+
+      # Qdrant
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: 6333
+      QDRANT_API_KEY: ${QDRANT_API_KEY:-}
+      QDRANT_HTTPS: "false"
+
+      # AI
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      XAI_API_KEY: ${XAI_API_KEY:-}
+
+      # Ollama
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-mistral:latest}
+
     volumes:
       - ./backend/data:/app/data
       - ./backend/logs:/app/logs
+
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
     depends_on:
-      - mysql
-      - redis
-      - qdrant
+      mysql:
+        condition: service_healthy
+
+      qdrant:
+        condition: service_healthy
+
+      redis:
+        condition: service_healthy
+
     networks:
       - quest-network
+
+
+  # ============================================================
+  # React Frontend
+  # ============================================================
+  frontend:
+    image: node:20-alpine
+    container_name: quest-frontend
     restart: unless-stopped
 
+    working_dir: /app
+
+    command:
+      - sh
+      - -c
+      - npm install && npm run dev -- --host 0.0.0.0
+
+    ports:
+      - "${FRONTEND_HOST_PORT:-15173}:5173"
+
+    volumes:
+      - ./frontend:/app
+      - quest_frontend_node_modules:/app/node_modules
+
+    environment:
+      VITE_API_URL: ${VITE_API_URL:-http://localhost:18010}
+
+    depends_on:
+      backend:
+        condition: service_healthy
+
+    networks:
+      - quest-network
+
+    profiles:
+      - dev
+
+
+# ==============================================================
+# Volumes
+# ==============================================================
 volumes:
-  mysql_data:
-    driver: local
-  qdrant_storage:
-    driver: local
-  redis_data:
+
+  quest_mysql_data:
     driver: local
 
+  quest_qdrant_data:
+    driver: local
+
+  quest_redis_data:
+    driver: local
+
+  quest_frontend_node_modules:
+    driver: local
+
+
+# ==============================================================
+# Network
+# ==============================================================
 networks:
+
   quest-network:
     driver: bridge

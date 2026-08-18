@@ -1,31 +1,49 @@
-FROM python:3.10-slim
+FROM python:3.12-slim
+
+# Prevent Python from creating .pyc files
+ENV PYTHONDONTWRITEBYTECODE=1
+
+# Flush Python output immediately
+ENV PYTHONUNBUFFERED=1
+
+# uv configuration
+ENV UV_COMPILE_BYTECODE=1
+ENV UV_LINK_MODE=copy
 
 WORKDIR /app
 
-# Install system dependencies
+# System dependencies
 RUN apt-get update && apt-get install -y \
-    gcc \
+    curl \
+    wget \
+    build-essential \
+    default-libmysqlclient-dev \
+    pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements
-COPY requirements.txt .
+# Install uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# ------------------------------------------------------------
+# Copy dependency files first
+# This makes Docker cache dependencies.
+# ------------------------------------------------------------
+COPY pyproject.toml uv.lock* ./
 
-# Copy application code
+# Install dependencies
+RUN if [ -f uv.lock ]; then \
+        uv sync --frozen --no-dev; \
+    else \
+        uv sync --no-dev; \
+    fi
+
+# Copy application
 COPY . .
 
-# Create necessary directories
-RUN mkdir -p /app/data/uploads/{blueprints,books,papers,syllabus,question_images,student_submissions,course_outcomes} \
-    && mkdir -p /app/logs
+# Make sure environment uses .venv
+ENV PATH="/app/.venv/bin:$PATH"
 
-# Expose port
 EXPOSE 8010
 
-# Health check
-HEALTHCHECK --interval=15s --timeout=10s --retries=5 \
-    CMD python -c "import requests; requests.get('http://localhost:8010/docs')" || exit 1
-
-# Run the application
-CMD ["python", "main.py"]
+# Start FastAPI
+CMD ["uv", "run", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8010"]

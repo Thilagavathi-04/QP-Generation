@@ -3,6 +3,8 @@ import { useAuth } from '../context/useAuth';
 import { User, Mail, Shield, Book, Lock, RefreshCcw, Camera } from 'lucide-react';
 import { showToast } from '../utils/toast';
 
+const API_BASE = import.meta.env.VITE_API_URL || import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8010';
+
 export default function Profile() {
   const { user, userData, isAdmin, token, refreshUser } = useAuth();
   const [newPassword, setNewPassword] = useState('');
@@ -21,7 +23,7 @@ export default function Profile() {
     setLoading(true);
     try {
       const currentToken = token || user?.token || localStorage.getItem('qp_token');
-      const response = await fetch('http://127.0.0.1:8010/api/auth/change-password', {
+      const response = await fetch(`${API_BASE}/api/auth/change-password`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ token: currentToken, new_password: newPassword }),

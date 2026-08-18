@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { AuthContext } from './AuthContextObject';
 
-const API_BASE = 'http://127.0.0.1:8010';
+const API_BASE = import.meta.env.VITE_API_URL || import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8010';
 
 export function AuthProvider({ children }) {
   const [currentUser, setCurrentUser] = useState(null); // { id, email, name, role, department, must_change_password }

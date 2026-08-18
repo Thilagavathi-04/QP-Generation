@@ -3,7 +3,7 @@ import { UserPlus, User, BookOpen, Trash } from 'lucide-react';
 import axios from 'axios';
 import { showToast } from '../utils/toast';
 
-const API_BASE = 'http://127.0.0.1:8010';
+const API_BASE = import.meta.env.VITE_API_URL || import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8010';
 
 export default function AdminProfile() {
   const [facultyName, setFacultyName] = useState('');

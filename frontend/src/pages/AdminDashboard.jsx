@@ -3,6 +3,8 @@ import axios from 'axios';
 import { CheckCircle, XCircle, Trash2, Shield, Search } from 'lucide-react';
 import '../styles/Admin.css'; // We will create this next
 
+const API_BASE = import.meta.env.VITE_API_URL || import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8010';
+
 const AdminDashboard = () => {
     const [users, setUsers] = useState([]);
     const [isLoading, setIsLoading] = useState(true);
@@ -11,7 +13,7 @@ const AdminDashboard = () => {
     // Fetch users on mount
     const fetchUsers = async () => {
         try {
-            const response = await axios.get('http://127.0.0.1:8010/api/admin/users');
+            const response = await axios.get(`${API_BASE}/api/admin/users`);
             setUsers(response.data);
         } catch (error) {
             console.error('Error fetching users:', error);
@@ -29,7 +31,7 @@ const AdminDashboard = () => {
         try {
             if (!window.confirm(`Are you sure you want to ${action} this user?`)) return;
 
-            await axios.post('http://127.0.0.1:8010/api/admin/action', {
+            await axios.post(`${API_BASE}/api/admin/action`, {
                 user_id: userId,
                 action: action
             });
