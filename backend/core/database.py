@@ -158,18 +158,28 @@ def migrate_database():
         except:
             pass
 
-        # Add blooms_level to questions
-        try:
-            cursor.execute("ALTER TABLE questions ADD COLUMN blooms_level VARCHAR(100)")
-            print("Added column blooms_level to questions table.")
-        except:
-            pass
+        # Add blooms_level, source, image_id to questions
+        questions_new_cols = [
+            ('blooms_level', 'VARCHAR(100)'),
+            ('source', "VARCHAR(50) DEFAULT 'generated'"),
+            ('image_id', 'INT')
+        ]
+        for col_name, col_type in questions_new_cols:
+            try:
+                cursor.execute(f"ALTER TABLE questions ADD COLUMN {col_name} {col_type}")
+                print(f"Added column {col_name} to questions table.")
+            except:
+                pass
 
         # Create question_images table if it doesn't exist
         try:
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS question_images (
                     id INT AUTO_INCREMENT PRIMARY KEY,
+                    subject_id INT,
+                    book_id INT,
+                    unit VARCHAR(50),
+                    page_number INT,
                     keywords TEXT NOT NULL,
                     description TEXT NOT NULL,
                     caption TEXT,
@@ -195,6 +205,10 @@ def migrate_database():
 
         # Add image file metadata columns if missing
         image_columns = [
+            ('subject_id', 'INT'),
+            ('book_id', 'INT'),
+            ('unit', 'VARCHAR(50)'),
+            ('page_number', 'INT'),
             ('caption', 'TEXT'),
             ('context', 'TEXT'),
             ('file_path', 'VARCHAR(1000)'),
@@ -348,6 +362,8 @@ def init_database():
                 difficulty VARCHAR(50),
                 marks DECIMAL(5,2),
                 blooms_level VARCHAR(100),
+                source VARCHAR(50) DEFAULT 'generated',
+                image_id INT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (question_bank_id) REFERENCES question_banks(id) ON DELETE CASCADE,
                 FOREIGN KEY (subject_id) REFERENCES subjects(id) ON DELETE CASCADE

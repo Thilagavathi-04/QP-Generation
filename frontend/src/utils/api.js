@@ -24,6 +24,7 @@ export const subjectAPI = {
 export const questionAPI = {
   generate: (data) => api.post('/api/questions/generate', data),
   getJobStatus: (jobId) => api.get(`/api/jobs/${jobId}`),
+  stopJob: (jobId) => api.post(`/api/jobs/${jobId}/stop`),
   getBySubject: (subjectId) => api.get(`/api/questions/subject/${subjectId}`),
   create: (data) => api.post('/api/questions', data),
   saveToBank: (questions) => api.post('/api/questions/save-to-bank', { questions }),

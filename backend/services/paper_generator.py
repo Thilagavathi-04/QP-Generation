@@ -612,6 +612,8 @@ def generate_docx_paper(
     questions_by_part: Dict[str, List[Dict]],
     output_path: str,
     course_outcome_file: str = None,
+    need_image: bool = True,
+    image_sources: List[str] = None,
 ):
     """Generate DOCX question paper"""
     
@@ -741,7 +743,7 @@ def generate_docx_paper(
             
             # Try to fetch and insert image for this question
             try:
-                image_data = get_image_for_question(q['content'], used_image_ids, trace_label=f"docx_q{question_number}")
+                image_data = get_image_for_question(q['content'], used_image_ids, trace_label=f"docx_q{question_number}", allowed_sources=image_sources) if need_image else None
                 if image_data and image_data.get('image_blob'):
                     # Track this image to avoid duplicates
                     if image_data.get('id'):
@@ -858,6 +860,8 @@ def generate_pdf_paper(
     output_path: str,
     course_outcome_file: str = None,
     subject_code: str | None = None,
+    need_image: bool = True,
+    image_sources: List[str] = None,
 ):
     """Generate PDF question paper"""
 
@@ -1130,7 +1134,7 @@ def generate_pdf_paper(
             # Try to fetch and insert image for this question
             temp_image_paths = []
             try:
-                image_data = get_image_for_question(q['content'], used_image_ids, trace_label=f"pdf_q{question_number}")
+                image_data = get_image_for_question(q['content'], used_image_ids, trace_label=f"pdf_q{question_number}", allowed_sources=image_sources) if need_image else None
                 if image_data and image_data.get('image_blob'):
                     # Track this image to avoid duplicates
                     if image_data.get('id'):
@@ -1285,7 +1289,9 @@ def generate_question_paper(
     exam_date: str,
     duration: str,
     file_format: str,
-    output_path: str
+    output_path: str,
+    need_image: bool = True,
+    image_sources: List[str] = None
 ) -> tuple[str, Dict]:
     """
     Main function to generate question paper
@@ -1306,6 +1312,7 @@ def generate_question_paper(
     print(f"📋 Blueprint: {blueprint.get('name', 'Unnamed')}")
     print(f"📊 Parts in blueprint: {len(blueprint.get('parts', []))}")
     print(f"📝 Format: {file_format.upper()}")
+    print(f"🖼️ Need Image: {need_image}, Sources: {image_sources}")
     print(f"{'='*60}\n")
     
     # Fetch questions for each part
@@ -1380,13 +1387,15 @@ def generate_question_paper(
         print("📄 Generating PDF...")
         generate_pdf_paper(
             title, subject_name, exam_type, exam_date or 'TBD',
-            total_marks, duration, blueprint, questions_by_part, output_path, course_outcome_file
+            total_marks, duration, blueprint, questions_by_part, output_path, course_outcome_file,
+            need_image=need_image, image_sources=image_sources
         )
     elif file_format.lower() == 'docx':
         print("📄 Generating DOCX...")
         generate_docx_paper(
             title, subject_name, exam_type, exam_date or 'TBD',
-            total_marks, duration, blueprint, questions_by_part, output_path, course_outcome_file
+            total_marks, duration, blueprint, questions_by_part, output_path, course_outcome_file,
+            need_image=need_image, image_sources=image_sources
         )
     else:
         raise ValueError(f"Unsupported file format: {file_format}")

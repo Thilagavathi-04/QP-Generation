@@ -74,6 +74,8 @@ class QuestionCreate(BaseModel):
     difficulty: Optional[str] = None
     marks: Optional[float] = None
     blooms_level: Optional[str] = None
+    source: Optional[str] = "teacher"
+    image_id: Optional[int] = None
 
 class QuestionResponse(BaseModel):
     id: int
@@ -86,6 +88,8 @@ class QuestionResponse(BaseModel):
     difficulty: Optional[str] = None
     marks: Optional[float] = None
     blooms_level: Optional[str] = None
+    source: Optional[str] = "generated"
+    image_id: Optional[int] = None
     created_at: datetime
 
 class BlueprintPartConfig(BaseModel):

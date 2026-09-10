@@ -20,7 +20,7 @@ load_dotenv(BASE_DIR / ".env")
 
 AI_MODE = os.getenv("AI_MODE", "offline").strip().lower()  # offline | online | hybrid
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").strip()
-OLLAMA_MODEL_NAME = os.getenv("OLLAMA_MODEL", "mistral:latest").strip()
+OLLAMA_MODEL_NAME = os.getenv("OLLAMA_MODEL", "llama3.2:1b").strip()
 XAI_BASE_URL = os.getenv("XAI_BASE_URL", "https://api.x.ai/v1").rstrip("/")
 XAI_MODEL_NAME = os.getenv("XAI_MODEL", "grok-2-latest").strip()
 XAI_API_KEY = os.getenv("XAI_API_KEY", "").strip()
@@ -109,33 +109,74 @@ def _extract_json_payload(raw_text: str) -> Dict[str, Any]:
         parsed = json.loads(text)
         if isinstance(parsed, dict):
             return parsed
-        raise ValueError("Model response was valid JSON but not a JSON object")
     except Exception:
-        first = text.find("{")
-        last = text.rfind("}")
-        if first == -1 or last == -1 or last <= first:
-            raise ValueError("Model response did not contain a JSON object")
+        pass
+
+    first = text.find("{")
+    last = text.rfind("}")
+    if first != -1 and last != -1 and last > first:
         candidate = text[first:last + 1]
-        parsed = json.loads(candidate)
-        if isinstance(parsed, dict):
-            return parsed
-        raise ValueError("Extracted JSON payload was not a JSON object")
+        try:
+            parsed = json.loads(candidate)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+
+    # Robust Fallback for Truncated/Malformed JSON:
+    # Find all question object patterns {"content": ...} inside raw text
+    object_matches = re.findall(r'\{[^{}]*?"content"\s*:[^{}]*?\}', text, flags=re.DOTALL)
+    extracted_questions = []
+    for obj_str in object_matches:
+        try:
+            q_obj = json.loads(obj_str)
+            if isinstance(q_obj, dict) and "content" in q_obj:
+                extracted_questions.append(q_obj)
+        except Exception:
+            pass
+
+    if extracted_questions:
+        return {"questions": extracted_questions}
+
+    raise ValueError("Model response did not contain a valid JSON object or question list")
 
 
-def _generate_with_ollama(prompt: str, timeout: int, temperature: float = 0.5) -> Dict[str, Any]:
+def _get_active_ollama_url() -> str:
+    url = OLLAMA_BASE_URL
+    try:
+        r = requests.get(f"{url}/api/tags", timeout=2)
+        if r.status_code == 200:
+            return url
+    except Exception:
+        pass
+
+    if url != "http://localhost:11434":
+        try:
+            r = requests.get("http://localhost:11434/api/tags", timeout=2)
+            if r.status_code == 200:
+                return "http://localhost:11434"
+        except Exception:
+            pass
+
+    return url
+
+
+def _generate_with_ollama(prompt: str, timeout: int = 120, temperature: float = 0.5) -> Dict[str, Any]:
+    url = _get_active_ollama_url()
     payload = {
         "model": OLLAMA_MODEL_NAME,
         "prompt": prompt,
         "stream": False,
         "format": "json",
+        "keep_alive": "1h",
         "options": {
-            "num_predict": 2048,
+            "num_predict": 4096,
             "temperature": temperature,
             "top_p": 0.9
         }
     }
 
-    response = requests.post(f"{OLLAMA_BASE_URL}/api/generate", json=payload, timeout=timeout)
+    response = requests.post(f"{url}/api/generate", json=payload, timeout=timeout)
     if response.status_code != 200:
         raise RuntimeError(f"Ollama API Error: {response.status_code}")
 
@@ -298,8 +339,9 @@ def generate_json_with_ai(
 
 
 def _ollama_available() -> bool:
+    url = _get_active_ollama_url()
     try:
-        response = requests.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=5)
+        response = requests.get(f"{url}/api/tags", timeout=2)
         if response.status_code != 200:
             return False
         models = response.json().get("models", [])
@@ -490,48 +532,49 @@ def generate_questions_with_ollama(
     context: Optional[str] = None,
     ai_provider: Optional[str] = None,
     blooms_level: Optional[str] = None,
+    cancel_check: Optional[Any] = None,
+    progress_callback: Optional[Any] = None,
 ) -> List[Dict[str, Any]]:
     """
     Generate questions using Ollama AI model with retry logic to ensure count is reached
     """
     all_questions = []
-    max_attempts = 3
+    max_attempts = 10
     attempt = 0
     
+    CHUNK_SIZE = 5
+
+    # Standardize topics list size so prompt stays concise
+    sample_topics = topics[:15] if len(topics) > 15 else topics
+
     while len(all_questions) < count and attempt < max_attempts:
+        if cancel_check and cancel_check():
+            print("Question generation cancelled via cancel_check.")
+            break
         attempt += 1
         remaining_count = count - len(all_questions)
+        sub_count = min(remaining_count, CHUNK_SIZE)
         
         # --- START: DYNAMIC PROMPT SELECTION ---
         if marks <= 1:
             # SPECIALIZED PROMPT FOR LOW-MARK QUESTIONS (MCQ, Fill-in-the-blank, etc.)
             prompt = f"""
-            You are an expert in creating simple, direct questions. Your task is to generate EXACTLY {remaining_count} questions.
+            You are an expert in creating simple, direct questions. Your task is to generate EXACTLY {sub_count} questions.
 
             STRICT CONSTRAINTS:
             1. Question Types Allowed: ONLY "Multiple Choice Question (MCQ)", "Fill in the blank", "True/False", or "Match the following".
-            2. Topics: {', '.join(topics)}
+            2. Topics: {', '.join(sample_topics)}
             3. Difficulty: {difficulty}
             4. Marks: {marks}
 
             ABSOLUTE RULES (NON-NEGOTIABLE):
             - DO NOT generate any definitional questions (e.g., "Define...", "What is...", "Explain...").
             - DO NOT generate any "list" or "name" questions.
-            - The question MUST be one of the allowed types. For example:
-              - "The capital of France is ______."
-              - "True or False: The earth is flat."
-              - "What is 2+2? A) 3, B) 4, C) 5"
-                            - "Match the following:\n1) Apple - Vegetable\n2) Carrot - Flower\n3) Dog - Animal\n4) Rose - Fruit"
-                        - For "Match the following", ALWAYS use EXACTLY this structure in content with exactly 4 pairs:
-                            Match the following:
-                            1) Item - Match
-                            2) Item - Match
-                            3) Item - Match
-                            4) Item - Match
+            - The question MUST be one of the allowed types.
             - DO NOT mention the "unit" or any academic course context in the question content itself.
 
             OUTPUT REQUIREMENTS:
-            - Return ONLY a valid JSON object with a key "questions" containing an array of EXACTLY {remaining_count} question objects.
+            - Return ONLY a valid JSON object with a key "questions" containing an array of EXACTLY {sub_count} question objects.
             - Each object must have "content", "marks", "difficulty", "topic", and "unit".
             
             Example JSON Structure:
@@ -550,24 +593,22 @@ def generate_questions_with_ollama(
         else:
             # ORIGINAL PROMPT FOR HIGHER-MARK QUESTIONS
             marks_instruction = get_marks_instruction(marks)
-            # Allow caller to override Bloom's level explicitly; otherwise derive from marks
             effective_blooms_level = blooms_level or get_blooms_level(marks)
             blooms_instruction = get_blooms_instruction(effective_blooms_level)
 
             prompt = f"""
             You are a professional academic question paper generator.
 
-            Generate EXACTLY {remaining_count} questions.
+            Generate EXACTLY {sub_count} questions.
 
             STRICT CONSTRAINTS:
-            1. Topics: {', '.join(topics)}
+            1. Topics: {', '.join(sample_topics)}
             2. Difficulty: {difficulty}
             3. Marks per question: {marks}
             
-            {f"Use the following grounding context from textbooks/syllabus: {context}" if context else ""}
+            {f"Use the following grounding context from textbooks/syllabus: {context[:1000]}" if context else ""}
 
             IMPORTANT RULES:
-
             1. MARKS-BASED STRUCTURE:
             - {marks_instruction}
 
@@ -575,19 +616,10 @@ def generate_questions_with_ollama(
             - Each question MUST follow Bloom's level: {effective_blooms_level}
             - {blooms_instruction}
 
-            3. COMBINED RULE:
-            - The question must match BOTH:
-              ✔ marks (length/depth)
-              ✔ Bloom’s level (thinking skill)
-
-            FAILURE CONDITIONS:
-            - Wrong cognitive level = INVALID
-            - Wrong length for marks = INVALID
-
             OUTPUT REQUIREMENTS:
             1. Return ONLY a valid JSON object.
-            2. The object MUST have a key named "questions" which is an array of exactly {remaining_count} question objects.
-            3. Each question object must have exactly these keys:
+            2. The object MUST have a key named "questions" which is an array of exactly {sub_count} question objects.
+            3. Each question object must have:
                - "content": (string) The full text of the question
                - "marks": (float) {marks}
                - "difficulty": (string) "{difficulty}"
@@ -606,7 +638,7 @@ def generate_questions_with_ollama(
                 }}
               ]
             }}
-            
+            """      
             Do not include any conversational text, markdown formatting (except the JSON itself), or explanations.
             """
         # --- END: DYNAMIC PROMPT SELECTION ---
@@ -669,6 +701,11 @@ def generate_questions_with_ollama(
 
                 # Apply semantic deduplication after processing each batch
                 all_questions = deduplicate_questions(all_questions)
+                if progress_callback:
+                    try:
+                        progress_callback(min(len(all_questions), count), count)
+                    except Exception as p_err:
+                        print(f"Progress callback error: {p_err}")
 
             except (json.JSONDecodeError, ValueError) as parse_err:
                 print(f"Failed to parse JSON from attempt {attempt}: {parse_err}")

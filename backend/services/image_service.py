@@ -122,12 +122,13 @@ class ImageService:
         source_type: str = "pdf_extraction",
         source_reference: str = None,
         file_name: str = None,
+        subject_id: Optional[int] = None,
+        unit: Optional[str] = None,
+        book_id: Optional[int] = None,
+        page_number: Optional[int] = None,
     ) -> Optional[int]:
         """
         Save an image in both DB and filesystem.
-
-        Web images are grouped by keyword folder under:
-        backend/data/question_images/web/<keyword>/
         """
         if not image_blob:
             logger.error("Cannot save empty image blob")
@@ -160,8 +161,8 @@ class ImageService:
             resolved_file_name = file_name or Path(rel_path).name
             query = f"""
                 INSERT INTO question_images
-                (keywords, description, caption, context, image_blob, source_type, source_reference, file_name, file_path, file_hash, mime_type, width, height)
-                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})
+                (keywords, description, caption, context, image_blob, source_type, source_reference, file_name, file_path, file_hash, mime_type, width, height, subject_id, unit, book_id, page_number)
+                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})
             """
 
             cursor.execute(
@@ -180,6 +181,10 @@ class ImageService:
                     mime_type,
                     width,
                     height,
+                    subject_id,
+                    unit,
+                    book_id,
+                    page_number,
                 ],
             )
             connection.commit()

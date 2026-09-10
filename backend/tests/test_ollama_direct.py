@@ -5,7 +5,7 @@ def test_ollama():
     prompt = "Generate 3 easy one word questions about Python programming. Write each question on a new line without numbering."
     url = "http://localhost:11434/api/generate"
     payload = {
-        "model": "mistral:latest",
+        "model": "llama3.2:1b",
         "prompt": prompt,
         "stream": False
     }

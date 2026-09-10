@@ -25,6 +25,24 @@ const QuestionBank = () => {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
 
+  // Teacher Question Management Modals
+  const [showAddManualModal, setShowAddManualModal] = useState(false)
+  const [manualQuestion, setManualQuestion] = useState({
+    content: '',
+    unit: '1',
+    topic: '',
+    difficulty: 'medium',
+    marks: 2,
+    source: 'teacher'
+  })
+  const [manualSaving, setManualSaving] = useState(false)
+
+  const [showUploadModal, setShowUploadModal] = useState(false)
+  const [uploadFile, setUploadFile] = useState(null)
+  const [parsingFile, setParsingFile] = useState(false)
+  const [parsedQuestions, setParsedQuestions] = useState([])
+  const [savingBatch, setSavingBatch] = useState(false)
+
   useEffect(() => {
     if (subjectId) {
       fetchSubjectData()
@@ -195,6 +213,111 @@ const QuestionBank = () => {
     window.URL.revokeObjectURL(url)
 
     showToast(`Exported ${selectedQuestions.length} questions successfully!`, 'success')
+  }
+
+  // --- TEACHER QUESTION MANAGEMENT HANDLERS ---
+  const handleSaveManualQuestion = async () => {
+    if (!manualQuestion.content || !manualQuestion.content.trim()) {
+      showToast('Please enter the question content', 'warning')
+      return
+    }
+    if (!selectedBank) {
+      showToast('No question bank selected', 'error')
+      return
+    }
+
+    try {
+      setManualSaving(true)
+      const payload = {
+        bank_id: selectedBank.id,
+        content: manualQuestion.content.trim(),
+        unit: manualQuestion.unit,
+        topic: manualQuestion.topic ? manualQuestion.topic.trim() : null,
+        difficulty: manualQuestion.difficulty,
+        marks: parseFloat(manualQuestion.marks) || 2,
+        source: 'teacher'
+      }
+
+      await api.post('/api/questions', payload)
+      showToast('Teacher question added successfully!', 'success')
+      setShowAddManualModal(false)
+      setManualQuestion({ content: '', unit: '1', topic: '', difficulty: 'medium', marks: 2, source: 'teacher' })
+      
+      // Refresh questions list
+      fetchBankQuestions(selectedBank)
+    } catch (err) {
+      console.error('Error adding teacher question:', err)
+      showToast(err.response?.data?.detail || 'Failed to add question', 'error')
+    } finally {
+      setManualSaving(false)
+    }
+  }
+
+  const handleParseUploadFile = async () => {
+    if (!uploadFile) {
+      showToast('Please select a file to upload', 'warning')
+      return
+    }
+
+    try {
+      setParsingFile(true)
+      const formData = new FormData()
+      formData.append('file', uploadFile)
+
+      const response = await api.post('/api/questions/upload-parse', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' }
+      })
+
+      if (response.data.success && response.data.questions?.length > 0) {
+        setParsedQuestions(response.data.questions)
+        showToast(`Parsed ${response.data.questions.length} questions successfully!`, 'success')
+      } else {
+        showToast('No questions could be parsed from the file', 'warning')
+      }
+    } catch (err) {
+      console.error('Error parsing file:', err)
+      showToast(err.response?.data?.detail || 'Failed to parse file', 'error')
+    } finally {
+      setParsingFile(false)
+    }
+  }
+
+  const handleSaveParsedBatch = async () => {
+    if (parsedQuestions.length === 0) {
+      showToast('No questions available to save', 'warning')
+      return
+    }
+    if (!selectedBank) {
+      showToast('No question bank selected', 'error')
+      return
+    }
+
+    try {
+      setSavingBatch(true)
+      const formattedBatch = parsedQuestions.map(q => ({
+        bank_id: selectedBank.id,
+        content: q.content,
+        unit: q.unit || '1',
+        topic: q.topic || null,
+        difficulty: q.difficulty || 'medium',
+        marks: parseFloat(q.marks) || 2,
+        source: 'teacher'
+      }))
+
+      await api.post('/api/questions/batch', formattedBatch)
+      showToast(`Successfully added ${formattedBatch.length} teacher questions to bank!`, 'success')
+      setShowUploadModal(false)
+      setUploadFile(null)
+      setParsedQuestions([])
+
+      // Refresh question bank questions
+      fetchBankQuestions(selectedBank)
+    } catch (err) {
+      console.error('Error saving batch questions:', err)
+      showToast(err.response?.data?.detail || 'Failed to save questions batch', 'error')
+    } finally {
+      setSavingBatch(false)
+    }
   }
 
   if (loading && !selectedBank && banks.length === 0) {
@@ -371,7 +494,21 @@ const QuestionBank = () => {
             {selectedQuestions.length > 0 && ` | Selected: ${selectedQuestions.length}`}
           </p>
         </div>
-        <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+          <button
+            onClick={() => setShowAddManualModal(true)}
+            className="btn btn-primary"
+            style={{ backgroundColor: '#7c3aed', borderColor: '#7c3aed' }}
+          >
+            ➕ Add Teacher Question
+          </button>
+          <button
+            onClick={() => setShowUploadModal(true)}
+            className="btn btn-primary"
+            style={{ backgroundColor: '#0284c7', borderColor: '#0284c7' }}
+          >
+            📁 Upload Questions File
+          </button>
           <button
             onClick={exportSelectedQuestions}
             disabled={selectedQuestions.length === 0}
@@ -611,7 +748,20 @@ const QuestionBank = () => {
                       display: 'block',
                       width: '100%'
                     }}>
-                      <strong style={{ color: 'var(--primary-600)', marginRight: '0.5rem' }}>Q{index + 1}:</strong>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.35rem', flexWrap: 'wrap' }}>
+                        <strong style={{ color: 'var(--primary-600)' }}>Q{index + 1}:</strong>
+                        <span style={{
+                          padding: '0.15rem 0.5rem',
+                          borderRadius: '12px',
+                          fontSize: '0.75rem',
+                          fontWeight: '600',
+                          backgroundColor: question.source === 'teacher' ? '#f3e8ff' : '#e0f2fe',
+                          color: question.source === 'teacher' ? '#7e22ce' : '#0369a1',
+                          border: question.source === 'teacher' ? '1px solid #d8b4fe' : '1px solid #7dd3fc'
+                        }}>
+                          {question.source === 'teacher' ? '👩‍🏫 Teacher Question' : '🤖 AI Generated'}
+                        </span>
+                      </div>
                       <span style={{ color: 'var(--secondary-900)', fontSize: '1rem' }}>
                         {question.content}
                       </span>
@@ -726,6 +876,284 @@ const QuestionBank = () => {
           })
         )}
       </div>
+
+      {/* --- OPTION A: MANUAL TEACHER QUESTION MODAL --- */}
+      {showAddManualModal && (
+        <div style={{
+          position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+          backgroundColor: 'rgba(0, 0, 0, 0.5)', display: 'flex',
+          alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '1.5rem'
+        }} onClick={() => setShowAddManualModal(false)}>
+          <div style={{
+            backgroundColor: 'white', borderRadius: '12px', padding: '2rem',
+            maxWidth: '650px', width: '100%', maxHeight: '90vh', overflowY: 'auto'
+          }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', borderBottom: '1px solid #e2e8f0', paddingBottom: '1rem' }}>
+              <h2 style={{ margin: 0, fontSize: '1.35rem', color: '#1e293b' }}>👩‍🏫 Add Teacher Question (Manual)</h2>
+              <button onClick={() => setShowAddManualModal(false)} className="btn-icon" style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '1.25rem' }}>✕</button>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+              <div>
+                <label className="form-label" style={{ fontWeight: '600' }}>Question Content *</label>
+                <textarea
+                  className="form-input"
+                  rows="4"
+                  placeholder="Enter the full question text here..."
+                  value={manualQuestion.content}
+                  onChange={(e) => setManualQuestion({ ...manualQuestion, content: e.target.value })}
+                  style={{ width: '100%', resize: 'vertical' }}
+                />
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+                <div>
+                  <label className="form-label" style={{ fontWeight: '600' }}>Unit Number *</label>
+                  <select
+                    className="form-select"
+                    value={manualQuestion.unit}
+                    onChange={(e) => setManualQuestion({ ...manualQuestion, unit: e.target.value })}
+                  >
+                    {[1, 2, 3, 4, 5, 6, 7, 8].map(u => (
+                      <option key={u} value={u.toString()}>Unit {u}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="form-label" style={{ fontWeight: '600' }}>Topic (Optional)</label>
+                  <input
+                    type="text"
+                    className="form-input"
+                    placeholder="e.g., Fourier Analysis"
+                    value={manualQuestion.topic}
+                    onChange={(e) => setManualQuestion({ ...manualQuestion, topic: e.target.value })}
+                  />
+                </div>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+                <div>
+                  <label className="form-label" style={{ fontWeight: '600' }}>Difficulty *</label>
+                  <select
+                    className="form-select"
+                    value={manualQuestion.difficulty}
+                    onChange={(e) => setManualQuestion({ ...manualQuestion, difficulty: e.target.value })}
+                  >
+                    <option value="easy">Easy</option>
+                    <option value="medium">Medium</option>
+                    <option value="hard">Hard</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="form-label" style={{ fontWeight: '600' }}>Marks *</label>
+                  <select
+                    className="form-select"
+                    value={manualQuestion.marks}
+                    onChange={(e) => setManualQuestion({ ...manualQuestion, marks: parseFloat(e.target.value) })}
+                  >
+                    <option value={2}>2 Marks</option>
+                    <option value={5}>5 Marks</option>
+                    <option value={10}>10 Marks</option>
+                    <option value={13}>13 Marks</option>
+                    <option value={16}>16 Marks</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '1rem', marginTop: '2rem', paddingTop: '1rem', borderTop: '1px solid #e2e8f0' }}>
+              <button onClick={() => setShowAddManualModal(false)} className="btn btn-secondary">Cancel</button>
+              <button onClick={handleSaveManualQuestion} disabled={manualSaving} className="btn btn-primary" style={{ backgroundColor: '#7c3aed', borderColor: '#7c3aed' }}>
+                {manualSaving ? 'Saving Question...' : 'Save Question to Bank'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* --- OPTION B: UPLOAD QUESTIONS FILE & PARSE PREVIEW MODAL --- */}
+      {showUploadModal && (
+        <div style={{
+          position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+          backgroundColor: 'rgba(0, 0, 0, 0.5)', display: 'flex',
+          alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '1.5rem'
+        }} onClick={() => setShowUploadModal(false)}>
+          <div style={{
+            backgroundColor: 'white', borderRadius: '12px', padding: '2rem',
+            maxWidth: '900px', width: '100%', maxHeight: '90vh', overflowY: 'auto'
+          }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', borderBottom: '1px solid #e2e8f0', paddingBottom: '1rem' }}>
+              <div>
+                <h2 style={{ margin: 0, fontSize: '1.35rem', color: '#1e293b' }}>📁 Upload Questions File</h2>
+                <p style={{ margin: '0.25rem 0 0 0', fontSize: '0.85rem', color: '#64748b' }}>
+                  Upload JSON, CSV, TXT, DOCX, or PDF files. Parsed questions can be reviewed before saving.
+                </p>
+              </div>
+              <button onClick={() => setShowUploadModal(false)} className="btn-icon" style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '1.25rem' }}>✕</button>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+              <div style={{
+                border: '2px dashed #cbd5e1', borderRadius: '8px', padding: '2rem', textAlign: 'center', backgroundColor: '#f8fafc'
+              }}>
+                <input
+                  type="file"
+                  accept=".json,.csv,.txt,.docx,.pdf"
+                  onChange={(e) => {
+                    if (e.target.files && e.target.files[0]) {
+                      setUploadFile(e.target.files[0])
+                      setParsedQuestions([])
+                    }
+                  }}
+                  style={{ display: 'none' }}
+                  id="file-upload-input"
+                />
+                <label htmlFor="file-upload-input" style={{ cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.5rem' }}>
+                  <span style={{ fontSize: '2rem' }}>📄</span>
+                  <span style={{ fontWeight: '600', color: '#334155' }}>
+                    {uploadFile ? uploadFile.name : 'Click to choose or drag a file here'}
+                  </span>
+                  <span style={{ fontSize: '0.8rem', color: '#94a3b8' }}>
+                    Supported formats: .json, .csv, .txt, .docx, .pdf
+                  </span>
+                </label>
+              </div>
+
+              {uploadFile && parsedQuestions.length === 0 && (
+                <div style={{ textAlign: 'center' }}>
+                  <button
+                    onClick={handleParseUploadFile}
+                    disabled={parsingFile}
+                    className="btn btn-primary"
+                    style={{ backgroundColor: '#0284c7', borderColor: '#0284c7', padding: '0.75rem 2rem' }}
+                  >
+                    {parsingFile ? (
+                      <>
+                        <div className="spinner" style={{ width: '16px', height: '16px', display: 'inline-block' }}></div>
+                        &nbsp; Parsing Questions...
+                      </>
+                    ) : '🔍 Parse & Preview Questions'}
+                  </button>
+                </div>
+              )}
+
+              {/* Parsed Questions Review & Edit Table */}
+              {parsedQuestions.length > 0 && (
+                <div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+                    <h3 style={{ margin: 0, fontSize: '1.1rem', color: '#1e293b' }}>
+                      Preview Parsed Questions ({parsedQuestions.length})
+                    </h3>
+                    <span style={{ fontSize: '0.85rem', color: '#16a34a', fontWeight: '600' }}>
+                      ✓ Check or edit items before saving
+                    </span>
+                  </div>
+
+                  <div style={{ maxHeight: '350px', overflowY: 'auto', border: '1px solid #e2e8f0', borderRadius: '8px' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
+                      <thead>
+                        <tr style={{ backgroundColor: '#f1f5f9', textAlign: 'left', borderBottom: '1px solid #cbd5e1' }}>
+                          <th style={{ padding: '0.75rem', width: '50px' }}>#</th>
+                          <th style={{ padding: '0.75rem' }}>Question Content</th>
+                          <th style={{ padding: '0.75rem', width: '80px' }}>Unit</th>
+                          <th style={{ padding: '0.75rem', width: '100px' }}>Difficulty</th>
+                          <th style={{ padding: '0.75rem', width: '80px' }}>Marks</th>
+                          <th style={{ padding: '0.75rem', width: '60px' }}>Remove</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {parsedQuestions.map((q, idx) => (
+                          <tr key={idx} style={{ borderBottom: '1px solid #f1f5f9' }}>
+                            <td style={{ padding: '0.75rem', fontWeight: '600', color: '#64748b' }}>{idx + 1}</td>
+                            <td style={{ padding: '0.75rem' }}>
+                              <textarea
+                                value={q.content}
+                                onChange={(e) => {
+                                  const updated = [...parsedQuestions]
+                                  updated[idx].content = e.target.value
+                                  setParsedQuestions(updated)
+                                }}
+                                style={{ width: '100%', border: '1px solid #cbd5e1', borderRadius: '4px', padding: '0.4rem', fontSize: '0.85rem' }}
+                                rows="2"
+                              />
+                            </td>
+                            <td style={{ padding: '0.75rem' }}>
+                              <input
+                                type="text"
+                                value={q.unit || '1'}
+                                onChange={(e) => {
+                                  const updated = [...parsedQuestions]
+                                  updated[idx].unit = e.target.value
+                                  setParsedQuestions(updated)
+                                }}
+                                style={{ width: '100%', border: '1px solid #cbd5e1', borderRadius: '4px', padding: '0.4rem' }}
+                              />
+                            </td>
+                            <td style={{ padding: '0.75rem' }}>
+                              <select
+                                value={q.difficulty || 'medium'}
+                                onChange={(e) => {
+                                  const updated = [...parsedQuestions]
+                                  updated[idx].difficulty = e.target.value
+                                  setParsedQuestions(updated)
+                                }}
+                                style={{ width: '100%', border: '1px solid #cbd5e1', borderRadius: '4px', padding: '0.4rem' }}
+                              >
+                                <option value="easy">easy</option>
+                                <option value="medium">medium</option>
+                                <option value="hard">hard</option>
+                              </select>
+                            </td>
+                            <td style={{ padding: '0.75rem' }}>
+                              <input
+                                type="number"
+                                value={q.marks || 2}
+                                onChange={(e) => {
+                                  const updated = [...parsedQuestions]
+                                  updated[idx].marks = e.target.value
+                                  setParsedQuestions(updated)
+                                }}
+                                style={{ width: '100%', border: '1px solid #cbd5e1', borderRadius: '4px', padding: '0.4rem' }}
+                              />
+                            </td>
+                            <td style={{ padding: '0.75rem', textAlign: 'center' }}>
+                              <button
+                                onClick={() => {
+                                  setParsedQuestions(prev => prev.filter((_, i) => i !== idx))
+                                }}
+                                style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', fontSize: '1rem' }}
+                                title="Remove item"
+                              >
+                                🗑️
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '2rem', paddingTop: '1rem', borderTop: '1px solid #e2e8f0' }}>
+              <button onClick={() => setShowUploadModal(false)} className="btn btn-secondary">Cancel</button>
+              {parsedQuestions.length > 0 && (
+                <button
+                  onClick={handleSaveParsedBatch}
+                  disabled={savingBatch}
+                  className="btn btn-primary"
+                  style={{ backgroundColor: '#16a34a', borderColor: '#16a34a' }}
+                >
+                  {savingBatch ? 'Saving Questions...' : `Confirm & Save ${parsedQuestions.length} Questions`}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       <Modal
         isOpen={modalState.isOpen}

@@ -1,16 +1,18 @@
 from fastapi import FastAPI, HTTPException, status, UploadFile, File, Form, Body, BackgroundTasks
 from pydantic import BaseModel
 import uuid
-import redis
 import json
-
-redis_client = None
+import os
 try:
+    import redis
     redis_url = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
     redis_client = redis.Redis.from_url(redis_url, decode_responses=True)
     redis_client.ping()
 except Exception:
+    redis = None
     redis_client = None
+
+USE_CELERY = os.getenv('USE_CELERY', 'false').strip().lower() in {'true', '1', 'yes'}
 
 class JobStore:
     def __init__(self):
@@ -34,6 +36,11 @@ class JobStore:
         if redis_client:
             return redis_client.exists(f"job:{key}")
         return key in self.local_jobs
+
+    def get(self, key, default=None):
+        if key in self:
+            return self[key]
+        return default
 
 GENERATION_JOBS = JobStore()
 
@@ -114,7 +121,14 @@ from services.rag_retrieval import retrieve_context, format_context_for_prompt
 from services.question_generator import generate_questions_with_ollama, test_ollama_connection
 from services.grading_engine import generate_answer_script, grade_student_paper, extract_text_from_pdf
 
-from core.celery_app import celery_app
+try:
+    from core.celery_app import celery_app
+except Exception:
+    class DummyCelery:
+        def task(self, *args, **kwargs):
+            def decorator(f): return f
+            return decorator
+    celery_app = DummyCelery()
 
 @celery_app.task(name="celery_run_generate_questions")
 def celery_run_generate_questions(job_id: str, subject_id: int, request_dict: dict):
@@ -968,8 +982,45 @@ def get_job_status(job_id: str):
         raise HTTPException(status_code=404, detail="Job not found")
     return GENERATION_JOBS[job_id]
 
+@app.post("/api/jobs/{job_id}/stop")
+@app.post("/api/jobs/{job_id}/cancel")
+def stop_job(job_id: str):
+    if job_id not in GENERATION_JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    current_job = GENERATION_JOBS[job_id]
+    if current_job.get("status") in ["completed", "failed", "cancelled", "stopped"]:
+        return {"success": True, "message": f"Job is already {current_job.get('status')}", "job_id": job_id}
+    
+    GENERATION_JOBS[job_id] = {
+        "status": "cancelled",
+        "error": "Process stopped by user"
+    }
+    return {"success": True, "message": "Job cancellation requested", "job_id": job_id}
+
+def update_job_progress(job_id: str, completed: int, total: int, message: str = ""):
+    current = GENERATION_JOBS.get(job_id, {})
+    if current and current.get("status") in ("cancelled", "stopped"):
+        return
+    percent = int((completed / total) * 100) if total > 0 else 0
+    GENERATION_JOBS[job_id] = {
+        "status": "pending",
+        "completed": completed,
+        "total": total,
+        "progress": min(percent, 99),
+        "message": message or f"Generated {completed} of {total} questions ({percent}%)"
+    }
+
 def run_generate_questions(job_id: str, subject_id: int, request: QuestionGenerationRequest):
+    def is_cancelled():
+        job = GENERATION_JOBS.get(job_id)
+        return bool(job and job.get("status") in ("cancelled", "stopped"))
+
     try:
+        if is_cancelled():
+            print(f"Job {job_id} was cancelled before starting.")
+            return
+
         connection = get_db_connection()
         if not connection:
             GENERATION_JOBS[job_id] = {"status": "failed", "error": "Database connection failed"}
@@ -1007,6 +1058,10 @@ def run_generate_questions(job_id: str, subject_id: int, request: QuestionGenera
         
         cursor.close()
         connection.close()
+
+        if is_cancelled():
+            print(f"Job {job_id} was cancelled after database query.")
+            return
         
         if request.topics and len(request.topics) > 0:
             topics = request.topics
@@ -1031,9 +1086,19 @@ def run_generate_questions(job_id: str, subject_id: int, request: QuestionGenera
             print(f"RAG Error (continuing without RAG): {rag_err}")
             context_str = None
 
+        if is_cancelled():
+            print(f"Job {job_id} was cancelled after RAG sync.")
+            return
+
+        total_needed = sum(item.count for item in request.plan) if request.plan else request.count
+        update_job_progress(job_id, 0, total_needed, f"Generating {total_needed} questions...")
+
         all_questions = []
         if request.plan:
             for item in request.plan:
+                if is_cancelled():
+                    print(f"Job {job_id} was cancelled during plan loop.")
+                    return
                 unit_topics = [
                     f"{t['topic_name']} (Unit {t['unit_number']})"
                     for t in topics_data
@@ -1041,6 +1106,11 @@ def run_generate_questions(job_id: str, subject_id: int, request: QuestionGenera
                 ]
                 if not unit_topics:
                     continue
+                
+                base_completed = len(all_questions)
+                def on_progress(batch_completed, batch_target):
+                    update_job_progress(job_id, base_completed + batch_completed, total_needed)
+
                 unit_questions = generate_questions_with_ollama(
                     topics=unit_topics,
                     count=item.count,
@@ -1050,12 +1120,18 @@ def run_generate_questions(job_id: str, subject_id: int, request: QuestionGenera
                     context=context_str,
                     ai_provider=request.ai_provider,
                     blooms_level=item.blooms_level,
+                    cancel_check=is_cancelled,
+                    progress_callback=on_progress,
                 )
                 for q in unit_questions:
                     q.setdefault('unit', str(item.unit))
                     q.setdefault('difficulty', item.difficulty)
                 all_questions.extend(unit_questions)
+                update_job_progress(job_id, len(all_questions), total_needed)
         else:
+            def on_progress(batch_completed, batch_target):
+                update_job_progress(job_id, batch_completed, total_needed)
+
             all_questions = generate_questions_with_ollama(
                 topics=topics,
                 count=request.count,
@@ -1064,10 +1140,19 @@ def run_generate_questions(job_id: str, subject_id: int, request: QuestionGenera
                 part_name=request.part_name,
                 context=context_str,
                 ai_provider=request.ai_provider,
+                cancel_check=is_cancelled,
+                progress_callback=on_progress,
             )
+
+        if is_cancelled():
+            print(f"Job {job_id} was cancelled before finalizing.")
+            return
 
         GENERATION_JOBS[job_id] = {
             "status": "completed",
+            "completed": len(all_questions),
+            "total": total_needed,
+            "progress": 100,
             "result": {
                 'success': True,
                 'count': len(all_questions),
@@ -1076,10 +1161,11 @@ def run_generate_questions(job_id: str, subject_id: int, request: QuestionGenera
             }
         }
     except Exception as e:
-        GENERATION_JOBS[job_id] = {
-            "status": "failed",
-            "error": str(e)
-        }
+        if not is_cancelled():
+            GENERATION_JOBS[job_id] = {
+                "status": "failed",
+                "error": str(e)
+            }
 
 @app.post("/api/subjects/{subject_id}/generate-questions")
 def generate_questions(subject_id: int, request: QuestionGenerationRequest, background_tasks: BackgroundTasks):
@@ -1093,7 +1179,7 @@ def generate_questions(subject_id: int, request: QuestionGenerationRequest, back
     job_id = str(uuid.uuid4())
     GENERATION_JOBS[job_id] = {"status": "pending"}
     
-    if redis_client:
+    if USE_CELERY and redis_client:
         celery_run_generate_questions.delay(job_id, subject_id, request.dict())
     else:
         background_tasks.add_task(run_generate_questions, job_id, subject_id, request)
@@ -1106,7 +1192,7 @@ def generate_all_questions(subject_id: int, requests: List[QuestionGenerationReq
     job_id = str(uuid.uuid4())
     GENERATION_JOBS[job_id] = {"status": "pending"}
     
-    if redis_client:
+    if USE_CELERY and redis_client:
         celery_run_generate_all_questions.delay(job_id, subject_id, [r.dict() for r in requests])
     else:
         background_tasks.add_task(_run_generate_all_questions, job_id, subject_id, requests)
@@ -1115,6 +1201,31 @@ def generate_all_questions(subject_id: int, requests: List[QuestionGenerationReq
 
 def _run_generate_all_questions(job_id: str, subject_id: int, requests: List[QuestionGenerationRequest]):
     """Generate questions for all parts at once"""
+    def is_cancelled():
+        job = GENERATION_JOBS.get(job_id)
+        return bool(job and job.get("status") in ("cancelled", "stopped"))
+
+    if is_cancelled():
+        print(f"Job {job_id} was cancelled before starting.")
+        return
+
+    import threading
+    progress_lock = threading.Lock()
+    completed_counter = [0]
+
+    grand_total = 0
+    for req in requests:
+        if req.plan:
+            grand_total += sum(item.count for item in req.plan)
+        else:
+            grand_total += req.count
+
+    def increment_progress(delta_count):
+        with progress_lock:
+            completed_counter[0] += delta_count
+            update_job_progress(job_id, completed_counter[0], grand_total)
+
+    update_job_progress(job_id, 0, grand_total, f"Generating {grand_total} questions across all parts...")
 
     default_provider = requests[0].ai_provider if requests else None
     if not test_ollama_connection(default_provider):
@@ -1145,11 +1256,13 @@ def _run_generate_all_questions(job_id: str, subject_id: int, requests: List[Que
         except Exception as rag_err:
             print(f"RAG Sync Error: {rag_err}")
 
-        import asyncio
-        
         tasks_inputs = []
 
         for request in requests:
+            if is_cancelled():
+                print(f"Job {job_id} cancelled during request preparation.")
+                return
+
             topics_data = []
 
             # Determine topics for this request
@@ -1171,7 +1284,6 @@ def _run_generate_all_questions(job_id: str, subject_id: int, requests: List[Que
                     topics = []
             
             if topics:
-                
                 # RAG INTEGRATION: Try to get context for each part
                 context_str = None
                 try:
@@ -1189,17 +1301,31 @@ def _run_generate_all_questions(job_id: str, subject_id: int, requests: List[Que
                 })
 
         def fetch_questions(input_data):
+            if is_cancelled():
+                return {
+                    'part_name': input_data['request'].part_name,
+                    'success': False,
+                    'error': 'Cancelled by user'
+                }
             req = input_data['request']
+            prev_batch_completed = [0]
+
+            def on_progress(batch_completed, batch_target):
+                delta = batch_completed - prev_batch_completed[0]
+                if delta > 0:
+                    prev_batch_completed[0] = batch_completed
+                    increment_progress(delta)
+
             try:
                 all_questions = []
                 topics_data = input_data['topics_data']
                 topics = input_data['topics']
                 context_str = input_data['context_str']
 
-                # If this part has a detailed plan, honor it by generating per
-                # unit/difficulty/Bloom combination and aggregating.
                 if req.plan:
                     for item in req.plan:
+                        if is_cancelled():
+                            break
                         unit_topics = [
                             f"{row['topic_name']} (Unit {row['unit_number']})"
                             for row in topics_data
@@ -1208,6 +1334,13 @@ def _run_generate_all_questions(job_id: str, subject_id: int, requests: List[Que
 
                         if not unit_topics:
                             continue
+
+                        plan_item_prev = [0]
+                        def on_plan_progress(batch_completed, batch_target):
+                            delta = batch_completed - plan_item_prev[0]
+                            if delta > 0:
+                                plan_item_prev[0] = batch_completed
+                                increment_progress(delta)
 
                         unit_questions = generate_questions_with_ollama(
                             topics=unit_topics,
@@ -1218,6 +1351,8 @@ def _run_generate_all_questions(job_id: str, subject_id: int, requests: List[Que
                             context=context_str,
                             ai_provider=req.ai_provider,
                             blooms_level=item.blooms_level,
+                            cancel_check=is_cancelled,
+                            progress_callback=on_plan_progress,
                         )
 
                         for q in unit_questions:
@@ -1225,7 +1360,6 @@ def _run_generate_all_questions(job_id: str, subject_id: int, requests: List[Que
                             q.setdefault('difficulty', item.difficulty)
                         all_questions.extend(unit_questions)
                 else:
-                    # Backwards-compatible behavior for parts without a plan
                     all_questions = generate_questions_with_ollama(
                         topics=topics,
                         count=req.count,
@@ -1234,6 +1368,8 @@ def _run_generate_all_questions(job_id: str, subject_id: int, requests: List[Que
                         part_name=req.part_name,
                         context=context_str,
                         ai_provider=req.ai_provider,
+                        cancel_check=is_cancelled,
+                        progress_callback=on_progress,
                     )
 
                 return {
@@ -1250,10 +1386,9 @@ def _run_generate_all_questions(job_id: str, subject_id: int, requests: List[Que
                     'error': str(e)
                 }
 
-        if tasks_inputs:
-            # Execute all part generations concurrently
+        if tasks_inputs and not is_cancelled():
             import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor() as executor:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
                 all_results = list(executor.map(fetch_questions, tasks_inputs))
         else:
             all_results = []
@@ -1261,8 +1396,15 @@ def _run_generate_all_questions(job_id: str, subject_id: int, requests: List[Que
         cursor.close()
         connection.close()
         
+        if is_cancelled():
+            print(f"Job {job_id} was cancelled before completing.")
+            return
+
         GENERATION_JOBS[job_id] = {
             "status": "completed",
+            "completed": completed_counter[0],
+            "total": grand_total,
+            "progress": 100,
             "result": {
                 'success': True,
                 'parts': all_results,
@@ -1271,17 +1413,19 @@ def _run_generate_all_questions(job_id: str, subject_id: int, requests: List[Que
         }
     
     except HTTPException as e:
-        GENERATION_JOBS[job_id] = {
-            "status": "failed",
-            "error": str(e.detail)
-        }
+        if not is_cancelled():
+            GENERATION_JOBS[job_id] = {
+                "status": "failed",
+                "error": str(e.detail)
+            }
     except Exception as e:
         if connection:
             connection.close()
-        GENERATION_JOBS[job_id] = {
-            "status": "failed",
-            "error": f"Error generating questions: {str(e)}"
-        }
+        if not is_cancelled():
+            GENERATION_JOBS[job_id] = {
+                "status": "failed",
+                "error": f"Error generating questions: {str(e)}"
+            }
 
 
     
@@ -1511,8 +1655,8 @@ def create_questions_batch(questions: List[QuestionCreate]):
         question_ids = []
         for question in questions:
             query = f"""
-                INSERT INTO questions (question_bank_id, subject_id, content, part, unit, topic, difficulty, marks, blooms_level)
-                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})
+                INSERT INTO questions (question_bank_id, subject_id, content, part, unit, topic, difficulty, marks, blooms_level, source, image_id)
+                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})
             """
             values = (
                 question.question_bank_id,
@@ -1523,7 +1667,9 @@ def create_questions_batch(questions: List[QuestionCreate]):
                 question.topic,
                 question.difficulty,
                 question.marks,
-                question.blooms_level
+                question.blooms_level,
+                question.source or "teacher",
+                question.image_id
             )
             cursor.execute(query, values)
             question_ids.append(cursor.lastrowid)
@@ -1572,10 +1718,11 @@ def create_question(question: QuestionCreate):
             raise HTTPException(status_code=404, detail="Subject not found")
         
         query = f"""
-            INSERT INTO questions (subject_id, content, part, unit, topic, difficulty, marks, blooms_level)
-            VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})
+            INSERT INTO questions (question_bank_id, subject_id, content, part, unit, topic, difficulty, marks, blooms_level, source, image_id)
+            VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})
         """
         values = (
+            question.question_bank_id,
             question.subject_id,
             question.content,
             question.part,
@@ -1583,7 +1730,9 @@ def create_question(question: QuestionCreate):
             question.topic,
             question.difficulty,
             question.marks,
-            question.blooms_level
+            question.blooms_level,
+            question.source or "teacher",
+            question.image_id
         )
         cursor.execute(query, values)
         connection.commit()
@@ -1603,6 +1752,169 @@ def create_question(question: QuestionCreate):
             connection.rollback()
             connection.close()
         raise HTTPException(status_code=500, detail=f"Error creating question: {str(e)}")
+
+@app.post("/api/questions/upload-parse")
+def upload_and_parse_questions(
+    file: UploadFile = File(...)
+):
+    """
+    Parse uploaded question file (JSON, CSV, TXT, DOCX, PDF) and extract structured questions for review.
+    """
+    filename = file.filename or ""
+    ext = filename.split(".")[-1].lower()
+    content_bytes = file.file.read()
+    
+    parsed_questions = []
+    
+    try:
+        if ext == "json":
+            data = json.loads(content_bytes.decode("utf-8"))
+            if isinstance(data, list):
+                items = data
+            elif isinstance(data, dict) and "questions" in data:
+                items = data["questions"]
+            else:
+                items = [data]
+            
+            for item in items:
+                if isinstance(item, dict) and "content" in item:
+                    parsed_questions.append({
+                        "content": str(item.get("content", "")).strip(),
+                        "part": str(item.get("part", "Part A")).strip(),
+                        "unit": str(item.get("unit", "1")).strip(),
+                        "topic": str(item.get("topic", "")).strip(),
+                        "difficulty": str(item.get("difficulty", "medium")).lower(),
+                        "marks": float(item.get("marks", 2.0)),
+                        "blooms_level": item.get("blooms_level") or item.get("bloomsLevel") or None,
+                        "source": "teacher"
+                    })
+        elif ext == "csv":
+            import csv
+            text_str = content_bytes.decode("utf-8", errors="ignore")
+            reader = csv.DictReader(io.StringIO(text_str))
+            for row in reader:
+                content = row.get("content") or row.get("question") or row.get("Question")
+                if content:
+                    parsed_questions.append({
+                        "content": content.strip(),
+                        "part": (row.get("part") or "Part A").strip(),
+                        "unit": (row.get("unit") or "1").strip(),
+                        "topic": (row.get("topic") or "").strip(),
+                        "difficulty": (row.get("difficulty") or "medium").strip().lower(),
+                        "marks": float(row.get("marks") or 2.0),
+                        "blooms_level": row.get("blooms_level") or None,
+                        "source": "teacher"
+                    })
+        elif ext in ["txt", "docx", "doc", "pdf"]:
+            text_str = ""
+            if ext == "txt":
+                text_str = content_bytes.decode("utf-8", errors="ignore")
+            elif ext in ["docx", "doc"]:
+                from docx import Document
+                doc = Document(io.BytesIO(content_bytes))
+                text_str = "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
+            elif ext == "pdf":
+                import fitz
+                pdf_doc = fitz.open(stream=content_bytes, filetype="pdf")
+                for page in pdf_doc:
+                    text_str += page.get_text() + "\n"
+                pdf_doc.close()
+            
+            lines = text_str.splitlines()
+            current_q = []
+            for line in lines:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                if re.match(r"^(?:Q\d+[\.\)]|\d+[\.\)])\s+", stripped) and current_q:
+                    q_text = " ".join(current_q).strip()
+                    q_text_clean = re.sub(r"^(?:Q\d+[\.\)]|\d+[\.\)])\s*", "", q_text)
+                    if q_text_clean:
+                        parsed_questions.append({
+                            "content": q_text_clean,
+                            "part": "Part A",
+                            "unit": "1",
+                            "topic": "",
+                            "difficulty": "medium",
+                            "marks": 2.0,
+                            "blooms_level": None,
+                            "source": "teacher"
+                        })
+                    current_q = [stripped]
+                else:
+                    current_q.append(stripped)
+            if current_q:
+                q_text = " ".join(current_q).strip()
+                q_text_clean = re.sub(r"^(?:Q\d+[\.\)]|\d+[\.\)])\s*", "", q_text)
+                if q_text_clean:
+                    parsed_questions.append({
+                        "content": q_text_clean,
+                        "part": "Part A",
+                        "unit": "1",
+                        "topic": "",
+                        "difficulty": "medium",
+                        "marks": 2.0,
+                        "blooms_level": None,
+                        "source": "teacher"
+                    })
+        else:
+            raise HTTPException(status_code=400, detail=f"Unsupported file format: {ext}. Supported formats: JSON, CSV, TXT, DOCX, PDF")
+            
+        return {
+            "success": True,
+            "filename": filename,
+            "count": len(parsed_questions),
+            "questions": parsed_questions
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error parsing questions file: {str(e)}")
+
+@app.post("/api/question-images/upload")
+def upload_user_image(
+    file: UploadFile = File(...),
+    keywords: str = Form(...),
+    description: Optional[str] = Form("User uploaded image"),
+    subject_id: Optional[int] = Form(None),
+    unit: Optional[str] = Form(None)
+):
+    """
+    Upload teacher/user image for question paper generation
+    """
+    try:
+        content_bytes = file.file.read()
+        if not content_bytes:
+            raise HTTPException(status_code=400, detail="Uploaded image file is empty")
+        
+        from services.image_service import ImageService
+        
+        image_id = ImageService.save_image(
+            keywords=keywords,
+            description=description or "User uploaded image",
+            image_blob=content_bytes,
+            source_type="user_uploaded",
+            source_reference=f"user_upload:{file.filename}",
+            file_name=file.filename,
+            subject_id=subject_id,
+            unit=unit
+        )
+        
+        if not image_id:
+            raise HTTPException(status_code=500, detail="Failed to save image to database")
+            
+        return {
+            "success": True,
+            "image_id": image_id,
+            "file_name": file.filename,
+            "keywords": keywords,
+            "description": description,
+            "source_type": "user_uploaded"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error uploading image: {str(e)}")
 
 @app.get("/api/questions/subject/{subject_id}", response_model=List[QuestionResponse])
 def get_questions_by_subject(subject_id: int):
@@ -2380,7 +2692,9 @@ def generate_question_paper_endpoint(
     exam_type: Optional[str] = Form("Regular"),
     exam_date: Optional[str] = Form(None),
     duration: Optional[str] = Form("3"),
-    file_format: str = Form("pdf")
+    file_format: str = Form("pdf"),
+    need_image: Optional[str] = Form("no"),
+    image_sources: Optional[str] = Form(None)
 ):
     """Generate actual question paper document from question bank"""
     connection = get_db_connection()
@@ -2435,6 +2749,18 @@ def generate_question_paper_endpoint(
         filename = f"{subject['subject_id']}_{safe_title}_{timestamp}.{file_format}"
         output_path = PAPERS_DIR / filename
         
+        # Parse need_image and image_sources
+        is_need_image = (need_image or "no").strip().lower() in ("yes", "true", "1")
+        sources_list = []
+        if image_sources:
+            if image_sources.startswith("["):
+                try:
+                    sources_list = json.loads(image_sources)
+                except:
+                    sources_list = [s.strip() for s in image_sources.split(",") if s.strip()]
+            else:
+                sources_list = [s.strip() for s in image_sources.split(",") if s.strip()]
+
         output_path_str, questions_by_part = generate_question_paper(
             cursor=cursor,
             title=title,
@@ -2446,7 +2772,9 @@ def generate_question_paper_endpoint(
             exam_date=exam_date,
             duration=duration,
             file_format=file_format,
-            output_path=str(output_path)
+            output_path=str(output_path),
+            need_image=is_need_image,
+            image_sources=sources_list
         )
         
         parsed_date = None
@@ -2584,6 +2912,11 @@ def generate_question_paper_from_data(request: dict):
 
         blueprint['total_marks'] = total_marks
         
+        need_image = request.get('need_image', False)
+        if isinstance(need_image, str):
+            need_image = need_image.strip().lower() in ('yes', 'true', '1')
+        image_sources = request.get('image_sources', [])
+
         # Generate the file
         if file_format == 'pdf':
             from services.paper_generator import generate_pdf_paper
@@ -2599,6 +2932,8 @@ def generate_question_paper_from_data(request: dict):
                 output_path=str(output_path),
                 course_outcome_file=course_outcome_file,
                 subject_code=subject.get('subject_id'),
+                need_image=need_image,
+                image_sources=image_sources,
             )
         else:  # docx
             from services.paper_generator import generate_docx_paper
@@ -2613,6 +2948,8 @@ def generate_question_paper_from_data(request: dict):
                 questions_by_part=questions_by_part,
                 output_path=str(output_path),
                 course_outcome_file=course_outcome_file,
+                need_image=need_image,
+                image_sources=image_sources,
             )
         
         # Parse exam date

@@ -5,7 +5,7 @@ Provides utilities for integrating images into generated question papers
 
 import uuid
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from pathlib import Path
 from services.rag_config import logger
 import tempfile
@@ -230,15 +230,18 @@ def get_image_for_question(
     question_text: str,
     used_image_ids: set = None,
     trace_label: str | None = None,
+    allowed_sources: Optional[List[str]] = None,
 ) -> Optional[Dict[str, Any]]:
     """
-    Retrieve an image for a question using multiple strategies:
-    1. Try database (from uploaded textbooks/books)
-    2. Try web search
+    Retrieve an image for a question based on allowed sources:
+    - Web Images ('web' / 'web_search')
+    - Book Images ('book' / 'pdf_extraction')
+    - User Uploaded Images ('user' / 'user_uploaded')
     
     Args:
         question_text: The question content
         used_image_ids: Set of image IDs already used in the paper to avoid duplicates
+        allowed_sources: List of allowed image sources (e.g. ['web', 'book', 'user'])
         
     Returns:
         Dictionary with image data or None
@@ -247,7 +250,7 @@ def get_image_for_question(
         trace = ImageGenerationTrace(question_text, trace_label=trace_label)
         if used_image_ids is None:
             used_image_ids = set()
-        trace.add_step("Start", "Image lookup requested")
+        trace.add_step("Start", f"Image lookup requested. Allowed sources: {allowed_sources}")
 
         if not detect_image_required_in_question(question_text):
             logger.debug(f"Question doesn't require image")
@@ -263,21 +266,44 @@ def get_image_for_question(
             trace.finalize("no_keywords")
             return None
         
-        logger.info(f"Retrieving image for question with keywords: {keywords}")
+        # Normalize allowed sources
+        sources_norm = set()
+        if allowed_sources:
+            for s in allowed_sources:
+                s_clean = s.strip().lower()
+                if 'web' in s_clean:
+                    sources_norm.add('web_search')
+                elif 'book' in s_clean or 'textbook' in s_clean or 'pdf' in s_clean:
+                    sources_norm.add('pdf_extraction')
+                    sources_norm.add('book')
+                    sources_norm.add('textbook')
+                elif 'user' in s_clean or 'upload' in s_clean:
+                    sources_norm.add('user_uploaded')
+                    sources_norm.add('user')
+                    sources_norm.add('database')
         
-        # Strategy 1: Try to get image directly from database
-        logger.debug(f"Strategy 1: Searching database...")
-        trace.add_step("Database search", f"Trying database keywords: {', '.join(keywords[:5])}")
-        image_data = _search_database_for_image(question_text, keywords, used_image_ids)
-        if image_data:
-            logger.info(f"✅ Found image in database")
-            trace.add_step("Database result", f"Selected {_trace_from_source_type(image_data.get('source_type'))}")
-            trace.finalize("selected", image_data=image_data)
-            return image_data
+        # If no sources specified or all requested, search all
+        if not sources_norm:
+            sources_norm = {'web_search', 'pdf_extraction', 'book', 'textbook', 'user_uploaded', 'user', 'database'}
+
+        logger.info(f"Retrieving image for question with keywords: {keywords}, normalized sources: {sources_norm}")
         
-        # Strategy 2: Try web search
-        if retrieve_image_for_question:
-            logger.debug(f"Strategy 2: Trying web search with keywords: {keywords[:3]}")
+        # Strategy 1: Search Database if Book Images or User Uploaded Images allowed
+        allow_db = any(src in sources_norm for src in {'pdf_extraction', 'book', 'textbook', 'user_uploaded', 'user', 'database'})
+        if allow_db:
+            logger.debug(f"Searching database for images matching sources: {sources_norm}")
+            trace.add_step("Database search", f"Searching DB for sources: {sources_norm}")
+            image_data = _search_database_for_image(question_text, keywords, used_image_ids, allowed_source_types=sources_norm)
+            if image_data:
+                logger.info(f"✅ Found image in database - source: {image_data.get('source_type')}")
+                trace.add_step("Database result", f"Selected {_trace_from_source_type(image_data.get('source_type'))}")
+                trace.finalize("selected", image_data=image_data)
+                return image_data
+
+        # Strategy 2: Web Search if Web Images is allowed
+        allow_web = 'web_search' in sources_norm
+        if allow_web and retrieve_image_for_question:
+            logger.debug(f"Searching web for keywords: {keywords[:3]}")
             trace.add_step("Web search", f"Searching web for keywords: {', '.join(keywords[:3])}")
             try:
                 image_data = retrieve_image_for_question(question_text, keywords, allow_database=False)
@@ -310,11 +336,8 @@ def get_image_for_question(
             except Exception as web_error:
                 logger.error(f"Web search failed: {web_error}", exc_info=True)
                 trace.add_step("Web search error", f"Exception: {str(web_error)[:100]}")
-        else:
-            logger.warning(f"Image agents helper not available - web search disabled")
-            trace.add_step("Web search", "Image agents helper is unavailable")
         
-        logger.warning(f"Could not retrieve image from database or web search for keywords: {keywords}")
+        logger.warning(f"Could not retrieve image from requested sources ({allowed_sources}) for keywords: {keywords}")
         trace.finalize("not_found")
         return None
         
@@ -379,7 +402,7 @@ def calculate_image_match_score(question_text: str, img: Dict[str, Any], keyword
     return score
 
 
-def _search_database_for_image(question_text: str, keywords: list, used_image_ids: set) -> Optional[Dict[str, Any]]:
+def _search_database_for_image(question_text: str, keywords: list, used_image_ids: set, allowed_source_types: set | None = None) -> Optional[Dict[str, Any]]:
     """
     Search database for images matching keywords and rank them by relevance.
     
@@ -387,6 +410,7 @@ def _search_database_for_image(question_text: str, keywords: list, used_image_id
         question_text: Original question text for semantic matching
         keywords: List of keywords to search
         used_image_ids: Set of already-used image IDs
+        allowed_source_types: Set of allowed source_type strings
         
     Returns:
         Image data dict or None
@@ -408,6 +432,12 @@ def _search_database_for_image(question_text: str, keywords: list, used_image_id
                         if not img_id or img_id in used_image_ids or img_id in seen_ids:
                             continue
                             
+                        # Filter by allowed source type if provided
+                        if allowed_source_types:
+                            img_src = (img.get('source_type') or '').strip().lower()
+                            if img_src and not any(allowed in img_src or img_src in allowed for allowed in allowed_source_types):
+                                continue
+
                         # Filter out logos/icons
                         if (img.get('width', 1000) < 150 and img.get('height', 1000) < 150) or "logo" in img.get('keywords', '').lower():
                             continue

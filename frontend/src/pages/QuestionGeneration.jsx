@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import { RefreshCw, Save, ArrowRight, ArrowLeft, CheckCircle, Plus, Trash2, Settings, X, Eye, Edit3 } from 'lucide-react'
+import { RefreshCw, Save, ArrowRight, ArrowLeft, CheckCircle, Plus, Trash2, Settings, X, Eye, Edit3, Octagon } from 'lucide-react'
 import api from '../utils/api'
 import { showToast } from '../utils/toast'
 import Modal from '../components/Modal'
@@ -30,6 +30,7 @@ const QuestionGeneration = () => {
   const [unitRange, setUnitRange] = useState({ from: '', to: '' })
   const [activeJobId, setActiveJobId] = useState(null)
   const [pollingStatus, setPollingStatus] = useState('')
+  const [jobProgress, setJobProgress] = useState({ completed: 0, total: 0, progress: 0 })
   const [jobPartIndex, setJobPartIndex] = useState(null)
   const [isAllPartsJob, setIsAllPartsJob] = useState(false)
   const [isRefreshing, setIsRefreshing] = useState(false)
@@ -222,10 +223,23 @@ const QuestionGeneration = () => {
             clearInterval(intervalId);
             setIsGenerating(false);
             setPollingStatus('');
+            setJobProgress({ completed: 0, total: 0, progress: 0 });
             setActiveJobId(null);
             showToast('Failed to generate questions: ' + (response.data.error || 'Unknown error'), 'error', 5000)
+          } else if (response.data.status === 'cancelled' || response.data.status === 'stopped') {
+            clearInterval(intervalId);
+            setIsGenerating(false);
+            setPollingStatus('');
+            setJobProgress({ completed: 0, total: 0, progress: 0 });
+            setActiveJobId(null);
+            showToast('Question generation process stopped.', 'info', 5000)
           } else {
-            setPollingStatus('Generating in background (You can safely navigate away)...');
+            const completed = response.data.completed || 0;
+            const total = response.data.total || 0;
+            const progress = response.data.progress || 0;
+            const msg = response.data.message || (total > 0 ? `Generated ${completed} of ${total} questions (${progress}%)` : 'Generating in background (You can safely navigate away)...');
+            setPollingStatus(msg);
+            setJobProgress({ completed, total, progress });
           }
         } catch (error) {
            console.error("Error polling job", error);
@@ -247,6 +261,25 @@ const QuestionGeneration = () => {
       if (intervalId) clearInterval(intervalId);
     };
   }, [activeJobId, isAllPartsJob, jobPartIndex, isRefreshing]);
+
+  const stopGeneration = async () => {
+    if (!activeJobId) {
+      setIsGenerating(false);
+      setPollingStatus('');
+      return;
+    }
+    try {
+      await api.post(`/api/jobs/${activeJobId}/stop`);
+      showToast('Stop request sent. Process is stopping...', 'info');
+    } catch (error) {
+      console.error('Error stopping job:', error);
+      showToast('Could not reach backend to stop job, cancelling client poll.', 'warning');
+    } finally {
+      setIsGenerating(false);
+      setActiveJobId(null);
+      setPollingStatus('');
+    }
+  };
 
   const fetchSubjectData = async () => {
     try {
@@ -835,9 +868,43 @@ const QuestionGeneration = () => {
         )}
 
         {pollingStatus && (
-          <div className="alert alert-info" style={{ marginTop: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <RefreshCw className="spin" size={16} />
-            {pollingStatus}
+          <div style={{ marginTop: '1rem', border: '1px solid #cbd5e1', borderRadius: '8px', background: '#f8fafc', padding: '1rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: '600', color: '#1e293b' }}>
+                <RefreshCw className="spin" size={18} style={{ color: 'var(--primary-600)' }} />
+                <span>{pollingStatus}</span>
+              </div>
+              <button
+                type="button"
+                onClick={stopGeneration}
+                className="btn btn-danger"
+                style={{ padding: '0.35rem 0.85rem', fontSize: '0.85rem', display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}
+              >
+                <Octagon size={16} />
+                Stop Process
+              </button>
+            </div>
+
+            <div style={{ width: '100%', backgroundColor: '#e2e8f0', borderRadius: '12px', height: '12px', overflow: 'hidden', position: 'relative' }}>
+              <div
+                style={{
+                  width: `${Math.max(jobProgress.progress || 0, 4)}%`,
+                  backgroundColor: 'var(--primary-600, #2563eb)',
+                  height: '100%',
+                  borderRadius: '12px',
+                  transition: 'width 0.4s ease-in-out',
+                  backgroundImage: 'linear-gradient(45deg, rgba(255,255,255,0.2) 25%, transparent 25%, transparent 50%, rgba(255,255,255,0.2) 50%, rgba(255,255,255,0.2) 75%, transparent 75%, transparent)',
+                  backgroundSize: '1rem 1rem'
+                }}
+              />
+            </div>
+
+            {jobProgress.total > 0 && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: '#475569', marginTop: '0.5rem', fontWeight: '500' }}>
+                <span>Generation Progress: {jobProgress.completed} of {jobProgress.total} questions</span>
+                <span>{jobProgress.progress}%</span>
+              </div>
+            )}
           </div>
         )}
 
@@ -1185,7 +1252,18 @@ const QuestionGeneration = () => {
               ))
             )}
           </div>
-          <div style={{ display: 'flex', gap: '1rem' }}>
+          <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
+            {isGenerating && (
+              <button
+                type="button"
+                onClick={stopGeneration}
+                className="btn btn-danger"
+                style={{ padding: '0.5rem 1rem', fontSize: '0.875rem', display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}
+              >
+                <Octagon size={16} />
+                Stop Process
+              </button>
+            )}
             <button
               onClick={() => generateAllParts(false)}
               disabled={isGenerating || !unitRange.from || !unitRange.to || parts.length === 0}

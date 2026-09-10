@@ -12,6 +12,8 @@ const QuestionPaperGeneration = () => {
   const [generating, setGenerating] = useState(false)
   const [saving, setSaving] = useState(false)
   const [showPreview, setShowPreview] = useState(false)
+  const [previewView, setPreviewView] = useState('pdf') // 'pdf' or 'cards'
+  const [pdfPreviewUrl, setPdfPreviewUrl] = useState(null)
   const [generatedPapers, setGeneratedPapers] = useState([])
   const [questionImages, setQuestionImages] = useState({}) // Map of question_id -> image_url
   const [loadingImages, setLoadingImages] = useState(false)
@@ -26,7 +28,9 @@ const QuestionPaperGeneration = () => {
     outputFormat: 'pdf',
     title: '',
     examType: 'Regular',
-    numberOfSets: 1
+    numberOfSets: 1,
+    needImage: 'no',
+    imageSources: ['web', 'book', 'user']
   })
 
   useEffect(() => {
@@ -383,7 +387,14 @@ const QuestionPaperGeneration = () => {
       console.log('Total papers to save:', generatedPapers.length)
 
       for (const paper of generatedPapers) {
-        // Prepare paper data for backend
+        // Map UI image source keys to backend API expected keys
+        const mappedImageSources = formData.imageSources.map(s => {
+          if (s === 'web') return 'web_search'
+          if (s === 'book') return 'pdf_extraction'
+          if (s === 'user') return 'user_uploaded'
+          return s
+        })
+
         const paperData = {
           title: `${formData.title} - ${paper.setName}`,
           subject_id: parseInt(formData.subjectId),
@@ -393,6 +404,8 @@ const QuestionPaperGeneration = () => {
           exam_duration: formData.examDuration || '3',
           total_marks: totalMarks,
           file_format: formData.outputFormat, // 'pdf' or 'docx'
+          need_image: formData.needImage === 'yes',
+          image_sources: mappedImageSources,
           paper_data: {
             parts: paper.parts.map(part => ({
               part_name: part.part_name,
@@ -405,7 +418,9 @@ const QuestionPaperGeneration = () => {
                 topic: q.topic,
                 unit: q.unit,
                 difficulty: q.difficulty,
-                blooms_level: q.bloomsLevel || null
+                blooms_level: q.bloomsLevel || null,
+                source: q.source || null,
+                image_id: q.image_id || null
               }))
             }))
           }
@@ -608,16 +623,108 @@ const QuestionPaperGeneration = () => {
               alignItems: 'center',
               marginBottom: '1.5rem',
               borderBottom: '2px solid #e5e7eb',
-              paddingBottom: '1rem'
+              paddingBottom: '1rem',
+              flexWrap: 'wrap',
+              gap: '1rem'
             }}>
               <div>
                 <h2 style={{ margin: 0, fontSize: '1.5rem', fontWeight: '600' }}>
                   {formData.title}
                 </h2>
                 <p style={{ margin: '0.5rem 0 0 0', color: '#666', fontSize: '0.875rem' }}>
-                  {formData.examType} | {generatedPapers.length} Set(s)
+                  {formData.examType} | {generatedPapers.length} Set(s) | Image Req: {formData.needImage === 'yes' ? `Yes (${formData.imageSources.join(', ')})` : 'No'}
                 </p>
               </div>
+
+              {/* View Switcher: PDF vs Card Editor */}
+              <div style={{
+                display: 'inline-flex',
+                background: '#f3f4f6',
+                padding: '4px',
+                borderRadius: '8px',
+                border: '1px solid #e5e7eb'
+              }}>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    setPreviewView('pdf')
+                    if (!pdfPreviewUrl && generatedPapers.length > 0) {
+                      try {
+                        const [{ jsPDF }] = await Promise.all([
+                          import('jspdf'),
+                          import('jspdf-autotable')
+                        ])
+                        // Generate PDF blob for live preview inside iframe
+                        const selectedSubject = subjects.find(s => s.id === parseInt(formData.subjectId))
+                        const doc = new jsPDF()
+                        const examDate = formData.examDate ? new Date(formData.examDate).toLocaleDateString() : new Date().toLocaleDateString()
+
+                        generatedPapers.forEach((paper, paperIndex) => {
+                          if (paperIndex > 0) doc.addPage()
+                          doc.setFont('helvetica', 'bold')
+                          doc.setFontSize(14)
+                          doc.text('SRI SHAKTHI INSTITUTE OF ENGINEERING AND TECHNOLOGY', 105, 17, { align: 'center' })
+                          doc.setFontSize(11)
+                          doc.text('(An Autonomous Institution)', 105, 23, { align: 'center' })
+                          doc.setFont('helvetica', 'normal')
+                          doc.setFontSize(8.5)
+                          doc.text('Coimbatore - 641 062, Tamil Nadu, India', 105, 28, { align: 'center' })
+                          doc.line(10, 32, 200, 32)
+                          
+                          doc.setFontSize(12)
+                          doc.setFont('helvetica', 'bold')
+                          doc.text(`${formData.title} (${paper.setName})`, 105, 42, { align: 'center' })
+                          doc.setFontSize(10)
+                          doc.setFont('helvetica', 'normal')
+                          doc.text(`Subject: ${selectedSubject?.name || 'N/A'}`, 15, 50)
+                          doc.text(`Date: ${examDate}`, 150, 50)
+                          doc.line(10, 54, 200, 54)
+
+                          let yPos = 65
+                          let qNum = 1
+                          paper.parts.forEach((part) => {
+                            if (yPos > 260) { doc.addPage(); yPos = 20 }
+                            doc.setFont('helvetica', 'bold')
+                            doc.setFontSize(11)
+                            doc.text(part.part_name, 15, yPos)
+                            yPos += 8
+
+                            part.questions.forEach((q) => {
+                              if (yPos > 270) { doc.addPage(); yPos = 20 }
+                              doc.setFont('helvetica', 'bold')
+                              doc.text(`${qNum}.`, 15, yPos)
+                              doc.setFont('helvetica', 'normal')
+                              const lines = doc.splitTextToSize(q.content, 170)
+                              doc.text(lines, 22, yPos)
+                              yPos += (lines.length * 5) + 6
+                              qNum++
+                            })
+                            yPos += 4
+                          })
+                        })
+
+                        const blob = doc.output('blob')
+                        setPdfPreviewUrl(URL.createObjectURL(blob))
+                      } catch (e) {
+                        console.error('PDF preview generation error:', e)
+                      }
+                    }
+                  }}
+                  className={`btn ${previewView === 'pdf' ? 'btn-primary' : 'btn-secondary'}`}
+                  style={{ padding: '0.4rem 0.8rem', fontSize: '0.85rem', borderRadius: '6px' }}
+                >
+                  📄 Actual PDF Preview
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPreviewView('cards')}
+                  className={`btn ${previewView === 'cards' ? 'btn-primary' : 'btn-secondary'}`}
+                  style={{ padding: '0.4rem 0.8rem', fontSize: '0.85rem', borderRadius: '6px' }}
+                >
+                  ✏️ Edit & Review Questions
+                </button>
+              </div>
+
               <div style={{ display: 'flex', gap: '0.5rem' }}>
                 <button
                   onClick={saveAllPapers}
@@ -653,7 +760,32 @@ const QuestionPaperGeneration = () => {
               </div>
             </div>
 
-            {generatedPapers.map((paper, setIndex) => (
+            {/* In-Website Live PDF Document Viewer */}
+            {previewView === 'pdf' ? (
+              <div style={{
+                height: '70vh',
+                border: '2px solid #cbd5e1',
+                borderRadius: '8px',
+                overflow: 'hidden',
+                backgroundColor: '#525659'
+              }}>
+                {pdfPreviewUrl ? (
+                  <iframe
+                    src={pdfPreviewUrl}
+                    title="In-Website Question Paper PDF Preview"
+                    width="100%"
+                    height="100%"
+                    style={{ border: 'none' }}
+                  />
+                ) : (
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'white' }}>
+                    <div className="spinner"></div> &nbsp; Preparing PDF Preview...
+                  </div>
+                )}
+              </div>
+            ) : null}
+
+            {previewView === 'cards' && generatedPapers.map((paper, setIndex) => (
               <div
                 key={setIndex}
                 style={{
@@ -950,72 +1082,112 @@ const QuestionPaperGeneration = () => {
         </div>
       </div>
 
-      <div className="card">
-        <h3>Exam Details</h3>
-        <div className="form-row">
-          <div className="form-group">
-            <label className="form-label">
-              <span style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                backgroundColor: 'var(--primary-600)',
-                color: 'white',
-                padding: '4px',
-                borderRadius: '6px',
-                marginRight: '0.5rem'
-              }}>
-                <Calendar size={14} />
-              </span>
-              Exam Date
-            </label>
-            <input
-              type="date"
-              className="form-input"
-              style={{ colorScheme: 'light' }}
-              value={formData.examDate}
-              onChange={(e) => setFormData({ ...formData, examDate: e.target.value })}
-            />
-          </div>
+      <div className="card fade-in" style={{
+        animationDelay: '0.3s',
+        borderLeft: '4px solid var(--primary-400)'
+      }}>
+        <h3 style={{ color: 'var(--primary-700)', marginBottom: '1.25rem' }}>Image Options</h3>
 
-          <div className="form-group">
-            <label className="form-label">
-              <span style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                backgroundColor: 'var(--primary-600)',
-                color: 'white',
-                padding: '4px',
-                borderRadius: '6px',
-                marginRight: '0.5rem'
-              }}>
-                <Clock size={14} />
-              </span>
-              Duration (hours)
+        <div style={{ marginBottom: '1.25rem' }}>
+          <label className="form-label" style={{ fontWeight: '600', marginBottom: '0.5rem', display: 'block' }}>
+            Need image in question paper? *
+          </label>
+          <div style={{ display: 'flex', gap: '2rem', marginTop: '0.5rem' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontWeight: '500' }}>
+              <input
+                type="radio"
+                name="needImage"
+                value="no"
+                checked={formData.needImage === 'no'}
+                onChange={() => setFormData(prev => ({ ...prev, needImage: 'no' }))}
+              />
+              <span>No</span>
             </label>
-            <input
-              type="number"
-              className="form-input"
-              min="1"
-              max="5"
-              value={formData.examDuration}
-              onChange={(e) => setFormData({ ...formData, examDuration: e.target.value })}
-            />
-          </div>
-
-          <div className="form-group">
-            <label className="form-label">Output Format</label>
-            <select
-              className="form-select"
-              value={formData.outputFormat}
-              onChange={(e) => setFormData({ ...formData, outputFormat: e.target.value })}
-            >
-              <option value="pdf">PDF</option>
-              <option value="docx">Word Document</option>
-            </select>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontWeight: '500' }}>
+              <input
+                type="radio"
+                name="needImage"
+                value="yes"
+                checked={formData.needImage === 'yes'}
+                onChange={() => setFormData(prev => ({ ...prev, needImage: 'yes' }))}
+              />
+              <span>Yes</span>
+            </label>
           </div>
         </div>
+
+        {formData.needImage === 'yes' && (
+          <div style={{
+            padding: '1.25rem',
+            backgroundColor: '#f8fafc',
+            borderRadius: '8px',
+            border: '1px solid #cbd5e1'
+          }} className="fade-in">
+            <label className="form-label" style={{ fontWeight: '600', marginBottom: '0.75rem', display: 'block' }}>
+              Image Source (Multi-Select) *
+            </label>
+            <p style={{ fontSize: '0.85rem', color: '#64748b', marginTop: '-0.25rem', marginBottom: '1rem' }}>
+              Select any combination of image sources for multi-source image retrieval.
+            </p>
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem' }}>
+              {[
+                { id: 'web', label: 'Web Images', desc: 'Fetch relevant online images via web search' },
+                { id: 'book', label: 'Book Images', desc: 'Extract figures & diagrams from uploaded textbook PDFs' },
+                { id: 'user', label: 'User Uploaded Images', desc: 'Use images manually uploaded to your database library' }
+              ].map(source => {
+                const isChecked = formData.imageSources.includes(source.id)
+                return (
+                  <label
+                    key={source.id}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'flex-start',
+                      gap: '0.75rem',
+                      padding: '0.85rem',
+                      borderRadius: '8px',
+                      border: isChecked ? '2px solid var(--primary-500, #3b82f6)' : '1px solid #e2e8f0',
+                      backgroundColor: isChecked ? '#eff6ff' : 'white',
+                      cursor: 'pointer',
+                      transition: 'all 0.2s ease'
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={isChecked}
+                      onChange={(e) => {
+                        const checked = e.target.checked
+                        setFormData(prev => {
+                          let nextSources = [...prev.imageSources]
+                          if (checked) {
+                            if (!nextSources.includes(source.id)) nextSources.push(source.id)
+                          } else {
+                            nextSources = nextSources.filter(id => id !== source.id)
+                          }
+                          return { ...prev, imageSources: nextSources }
+                        })
+                      }}
+                      style={{ marginTop: '0.2rem' }}
+                    />
+                    <div>
+                      <div style={{ fontWeight: '600', fontSize: '0.95rem', color: '#1e293b' }}>
+                        {source.label}
+                      </div>
+                      <div style={{ fontSize: '0.78rem', color: '#64748b', marginTop: '0.2rem' }}>
+                        {source.desc}
+                      </div>
+                    </div>
+                  </label>
+                )
+              })}
+            </div>
+            {formData.needImage === 'yes' && formData.imageSources.length === 0 && (
+              <p style={{ color: '#ef4444', fontSize: '0.85rem', marginTop: '0.75rem', marginBottom: 0 }}>
+                ⚠️ Please select at least one image source when image option is enabled.
+              </p>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="card" style={{ textAlign: 'center' }}>
