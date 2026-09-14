@@ -5,11 +5,17 @@ This module keeps the public helper API used by image integration, but avoids
 the LangGraph dependency that was failing on the current Python runtime.
 """
 
+import os
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from typing import Any, Dict, List, Optional
 
 from services.image_service import ImageService
 from services.image_web_search import ImageWebSearch
 from services.rag_config import logger
+
+# Per-call timeout for web search when invoked from the agent layer.
+# Kept slightly below IMAGE_SEARCH_TOTAL_TIMEOUT to allow graceful degradation.
+_AGENT_WEB_SEARCH_TIMEOUT = int(os.getenv("AGENT_WEB_SEARCH_TIMEOUT", "25"))
 
 
 def _normalize_keywords(question_context: str, required_keywords: Optional[List[str]] = None) -> List[str]:
@@ -109,7 +115,23 @@ class ImageAgentSystem:
                             "id": best_db_image.get("id"),
                         }
 
-            web_images = ImageWebSearch.search_images(query or question_context, limit=3)
+            web_images = []
+            try:
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(
+                        ImageWebSearch.search_images,
+                        query or question_context,
+                        limit=3,
+                    )
+                    web_images = future.result(timeout=_AGENT_WEB_SEARCH_TIMEOUT)
+            except FuturesTimeoutError:
+                logger.warning(
+                    f"Web search timed out after {_AGENT_WEB_SEARCH_TIMEOUT}s for: {question_context[:80]}"
+                )
+                web_images = []
+            except Exception as search_exc:
+                logger.error(f"Web search error: {search_exc}")
+                web_images = []
             if web_images:
                 for image in web_images:
                     image["confidence_score"] = ImageWebSearch.verify_image_matches_context(

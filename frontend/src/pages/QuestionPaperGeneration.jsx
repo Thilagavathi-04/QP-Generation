@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { FileOutput, Download, Calendar, Clock, X, Edit2, RefreshCw, Save } from 'lucide-react'
+import { FileOutput, Download, Calendar, Clock, X, Edit2, RefreshCw, Save, Upload } from 'lucide-react'
 import api from '../utils/api'
 import { showToast } from '../utils/toast'
 import Modal from '../components/Modal'
@@ -17,6 +17,7 @@ const QuestionPaperGeneration = () => {
   const [generatedPapers, setGeneratedPapers] = useState([])
   const [questionImages, setQuestionImages] = useState({}) // Map of question_id -> image_url
   const [loadingImages, setLoadingImages] = useState(false)
+  const [uploadingImageKey, setUploadingImageKey] = useState(null)
   const [modalState, setModalState] = useState({ isOpen: false, type: '', data: null })
   const [formData, setFormData] = useState({
     subjectId: '',
@@ -81,6 +82,44 @@ const QuestionPaperGeneration = () => {
       console.error('Error fetching question images:', error)
     } finally {
       setLoadingImages(false)
+    }
+  }
+
+  const handleUploadImageForQuestion = async (setIndex, partIndex, questionIndex, file) => {
+    const uploadKey = `${setIndex}-${partIndex}-${questionIndex}`
+    try {
+      setUploadingImageKey(uploadKey)
+      const question = generatedPapers[setIndex].parts[partIndex].questions[questionIndex]
+
+      const formDataToSend = new FormData()
+      formDataToSend.append('file', file)
+      formDataToSend.append('keywords', question.content.substring(0, 100))
+      formDataToSend.append('description', 'User uploaded image in preview')
+
+      const response = await api.post('/api/question-images/upload', formDataToSend, {
+        headers: { 'Content-Type': 'multipart/form-data' }
+      })
+
+      if (response.data && response.data.image_id) {
+        // Update the question's image_id in local state
+        setGeneratedPapers(prev => {
+          const updated = [...prev]
+          updated[setIndex].parts[partIndex].questions[questionIndex].image_id = response.data.image_id
+          return updated
+        })
+
+        // Create a local object URL for immediate display
+        const localUrl = URL.createObjectURL(file)
+        const compositeId = question.id
+        setQuestionImages(prev => ({ ...prev, [compositeId]: localUrl }))
+
+        showToast('Image uploaded successfully!', 'success')
+      }
+    } catch (error) {
+      console.error('Error uploading image:', error)
+      showToast('Failed to upload image', 'error')
+    } finally {
+      setUploadingImageKey(null)
     }
   }
 
@@ -925,6 +964,31 @@ const QuestionPaperGeneration = () => {
                               </div>
                             </div>
                             <div style={{ display: 'flex', gap: '0.5rem', marginLeft: '1rem' }}>
+                              <input
+                                type="file"
+                                accept="image/*"
+                                style={{ display: 'none' }}
+                                id={`img-upload-${setIndex}-${partIndex}-${qIndex}`}
+                                onChange={(e) => {
+                                  if (e.target.files && e.target.files[0]) {
+                                    handleUploadImageForQuestion(setIndex, partIndex, qIndex, e.target.files[0])
+                                  }
+                                  e.target.value = ''
+                                }}
+                              />
+                              <button
+                                onClick={() => document.getElementById(`img-upload-${setIndex}-${partIndex}-${qIndex}`).click()}
+                                className="btn btn-outline"
+                                style={{ padding: '0.25rem 0.5rem', fontSize: '0.875rem' }}
+                                title="Upload Image"
+                                disabled={uploadingImageKey === `${setIndex}-${partIndex}-${qIndex}`}
+                              >
+                                {uploadingImageKey === `${setIndex}-${partIndex}-${qIndex}` ? (
+                                  <div className="spinner" style={{ width: '14px', height: '14px', display: 'inline-block' }}></div>
+                                ) : (
+                                  <Upload size={14} />
+                                )}
+                              </button>
                               <button
                                 onClick={() => editQuestion(setIndex, partIndex, qIndex)}
                                 className="btn btn-outline"

@@ -15,6 +15,11 @@ from dotenv import load_dotenv
 from typing import List, Optional, Dict, Any
 from PIL import Image, ImageOps
 import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+
+# Maximum seconds allowed for the entire search_images() fallback chain.
+# Individual provider searches may use shorter internal timeouts.
+IMAGE_SEARCH_TOTAL_TIMEOUT = int(os.getenv("IMAGE_SEARCH_TOTAL_TIMEOUT", "30"))
 
 # Load backend/.env
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -485,14 +490,9 @@ class ImageWebSearch:
     
     
     @staticmethod
-    def search_images(keywords: str, limit: int = 5, min_resolution: int = 400,
-                     keyword_filter: Optional[str] = None) -> List[Dict[str, Any]]:
-        """
-        Search for images with dynamic fallbacks:
-        1. DuckDuckGo (scraping, with proxy support if configured)
-        2. Google Custom Search JSON API (authenticated)
-        3. Unsplash API (authenticated)
-        """
+    def _search_images_inner(keywords: str, limit: int = 5, min_resolution: int = 400,
+                            keyword_filter: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Inner search logic without timeout – called from search_images."""
         # 1. Try DuckDuckGo
         images = []
         try:
@@ -534,6 +534,41 @@ class ImageWebSearch:
                 logger.warning(f"Unsplash search failed: {unsplash_err}")
                 
         return images
+
+    @staticmethod
+    def search_images(keywords: str, limit: int = 5, min_resolution: int = 400,
+                     keyword_filter: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Search for images with dynamic fallbacks and an overall timeout.
+
+        Wraps the full fallback chain (DuckDuckGo -> Google CSE -> Unsplash)
+        in a thread-level timeout so a single slow provider cannot block
+        question paper generation indefinitely.
+
+        Args:
+            keywords: Search keywords
+            limit: Number of images to return
+            min_resolution: Minimum width/height in pixels
+            keyword_filter: Comma-separated keywords to filter URLs
+
+        Returns:
+            List of image dicts, or empty list on timeout / all failures.
+        """
+        try:
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(
+                    ImageWebSearch._search_images_inner,
+                    keywords, limit, min_resolution, keyword_filter,
+                )
+                return future.result(timeout=IMAGE_SEARCH_TOTAL_TIMEOUT)
+        except FuturesTimeoutError:
+            logger.warning(
+                f"Image search timed out after {IMAGE_SEARCH_TOTAL_TIMEOUT}s for keywords: {keywords}"
+            )
+            return []
+        except Exception as exc:
+            logger.error(f"Image search failed unexpectedly: {exc}")
+            return []
     
     @staticmethod
     def verify_image_matches_context(image_blob: bytes, context_keywords: List[str]) -> float:
