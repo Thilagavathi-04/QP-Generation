@@ -53,9 +53,28 @@ const QuestionPaperGeneration = () => {
     }
   }, [showPreview, generatedPapers])
 
+  useEffect(() => {
+    return () => {
+      // Cleanup all object URLs when component unmounts
+      Object.values(questionImages).forEach(url => {
+        if (url && url.startsWith('blob:')) {
+          URL.revokeObjectURL(url)
+        }
+      })
+    }
+  }, [])
+
   const fetchQuestionImages = async () => {
     try {
       setLoadingImages(true)
+
+      // Revoke previous object URLs to prevent memory leaks
+      Object.values(questionImages).forEach(url => {
+        if (url && url.startsWith('blob:')) {
+          URL.revokeObjectURL(url)
+        }
+      })
+
       const images = {}
       
       for (const paper of generatedPapers) {
@@ -108,9 +127,15 @@ const QuestionPaperGeneration = () => {
           return updated
         })
 
+        // Revoke old object URL for this question if it exists
+        const compositeId = question.id
+        const oldUrl = questionImages[compositeId]
+        if (oldUrl && oldUrl.startsWith('blob:')) {
+          URL.revokeObjectURL(oldUrl)
+        }
+
         // Create a local object URL for immediate display
         const localUrl = URL.createObjectURL(file)
-        const compositeId = question.id
         setQuestionImages(prev => ({ ...prev, [compositeId]: localUrl }))
 
         showToast('Image uploaded successfully!', 'success')
@@ -121,6 +146,16 @@ const QuestionPaperGeneration = () => {
     } finally {
       setUploadingImageKey(null)
     }
+  }
+
+  const closePreview = () => {
+    Object.values(questionImages).forEach(url => {
+      if (url && url.startsWith('blob:')) {
+        URL.revokeObjectURL(url)
+      }
+    })
+    setQuestionImages({})
+    setShowPreview(false)
   }
 
   const fetchData = async () => {
@@ -477,7 +512,7 @@ const QuestionPaperGeneration = () => {
       }
 
       showToast(`Successfully saved ${generatedPapers.length} question paper(s) as ${formData.outputFormat.toUpperCase()}!`, 'success')
-      setShowPreview(false)
+      closePreview()
 
       setGeneratedPapers([])
       setFormData({
@@ -642,7 +677,7 @@ const QuestionPaperGeneration = () => {
             padding: '2rem',
             overflow: 'auto'
           }}
-          onClick={() => setShowPreview(false)}
+          onClick={closePreview}
         >
           <div
             style={{
@@ -790,7 +825,7 @@ const QuestionPaperGeneration = () => {
                   Download All
                 </button>
                 <button
-                  onClick={() => setShowPreview(false)}
+                  onClick={closePreview}
                   className="btn btn-secondary"
                 >
                   <X size={16} />
