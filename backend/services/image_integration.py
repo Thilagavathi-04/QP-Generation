@@ -516,15 +516,16 @@ def save_image_blob_to_temp(image_blob: bytes) -> Optional[str]:
         
         # Create temporary file with explicit mode and buffering
         temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.png', mode='wb')
-        
-        # Write all bytes at once
-        bytes_written = temp_file.write(image_blob)
-        
-        # Ensure all data is written to disk
-        temp_file.flush()
-        import os
-        os.fsync(temp_file.fileno())
-        temp_file.close()
+        try:
+            # Write all bytes at once
+            bytes_written = temp_file.write(image_blob)
+            
+            # Ensure all data is written to disk
+            temp_file.flush()
+            import os
+            os.fsync(temp_file.fileno())
+        finally:
+            temp_file.close()
         
         if bytes_written != len(image_blob):
             logger.error(f"Incomplete write: wrote {bytes_written} of {len(image_blob)} bytes")

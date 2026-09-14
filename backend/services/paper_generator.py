@@ -881,6 +881,7 @@ def generate_pdf_paper(
     
     # Container for the 'Flowable' objects
     elements = []
+    _local_temp_paths = []
     
     # Check for logo file in frontend/public
     logo_path = Path(__file__).resolve().parent.parent.parent / "backend" / "data" / "logo.png"
@@ -1178,6 +1179,10 @@ def generate_pdf_paper(
                             logger.info(f"Added image for question {question_number} in PDF")
                         except Exception as e:
                             logger.error(f"Error adding image to PDF: {e}")
+                            try:
+                                cleanup_temp_image_file(img_temp_path)
+                            except Exception:
+                                pass
             except Exception as e:
                 logger.error(f"Error fetching image for PDF question {question_number}: {e}")
             
@@ -1186,9 +1191,7 @@ def generate_pdf_paper(
             
             # Store temp paths for cleanup
             if temp_image_paths:
-                if not hasattr(generate_pdf_paper, '_temp_image_paths'):
-                    generate_pdf_paper._temp_image_paths = []
-                generate_pdf_paper._temp_image_paths.extend(temp_image_paths)
+                _local_temp_paths.extend(temp_image_paths)
         
         elements.append(Spacer(1, 0.2*inch))
 
@@ -1269,13 +1272,11 @@ def generate_pdf_paper(
                 pass
         
         # Clean up temporary image files
-        if hasattr(generate_pdf_paper, '_temp_image_paths'):
-            for temp_path in generate_pdf_paper._temp_image_paths:
-                try:
-                    cleanup_temp_image_file(temp_path)
-                except Exception as e:
-                    logger.warning(f"Error cleaning up temp image: {e}")
-            generate_pdf_paper._temp_image_paths = []
+        for temp_path in _local_temp_paths:
+            try:
+                cleanup_temp_image_file(temp_path)
+            except Exception as e:
+                logger.warning(f"Error cleaning up temp image: {e}")
 
 
 def generate_question_paper(

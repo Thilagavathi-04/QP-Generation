@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react'
-import { FileOutput, Download, Calendar, Clock, X, Edit2, RefreshCw, Save, Upload } from 'lucide-react'
+import React, { useState, useEffect, useRef } from 'react'
+import { FileOutput, Download, X, Edit2, RefreshCw, Save, Upload } from 'lucide-react'
 import api from '../utils/api'
 import { showToast } from '../utils/toast'
 import Modal from '../components/Modal'
@@ -19,6 +19,7 @@ const QuestionPaperGeneration = () => {
   const [loadingImages, setLoadingImages] = useState(false)
   const [uploadingImageKey, setUploadingImageKey] = useState(null)
   const [modalState, setModalState] = useState({ isOpen: false, type: '', data: null })
+  const blobUrlsRef = useRef([])
   const [formData, setFormData] = useState({
     subjectId: '',
     questionBankId: '',
@@ -55,12 +56,12 @@ const QuestionPaperGeneration = () => {
 
   useEffect(() => {
     return () => {
-      // Cleanup all object URLs when component unmounts
-      Object.values(questionImages).forEach(url => {
+      blobUrlsRef.current.forEach(url => {
         if (url && url.startsWith('blob:')) {
           URL.revokeObjectURL(url)
         }
       })
+      blobUrlsRef.current = []
     }
   }, [])
 
@@ -69,11 +70,12 @@ const QuestionPaperGeneration = () => {
       setLoadingImages(true)
 
       // Revoke previous object URLs to prevent memory leaks
-      Object.values(questionImages).forEach(url => {
+      blobUrlsRef.current.forEach(url => {
         if (url && url.startsWith('blob:')) {
           URL.revokeObjectURL(url)
         }
       })
+      blobUrlsRef.current = []
 
       const images = {}
       
@@ -86,6 +88,7 @@ const QuestionPaperGeneration = () => {
                   responseType: 'blob'
                 })
                 const imageUrl = URL.createObjectURL(response.data)
+                blobUrlsRef.current.push(imageUrl)
                 images[question.id] = imageUrl
               } catch (error) {
                 // No image for this question, skip
@@ -115,9 +118,7 @@ const QuestionPaperGeneration = () => {
       formDataToSend.append('keywords', question.content.substring(0, 100))
       formDataToSend.append('description', 'User uploaded image in preview')
 
-      const response = await api.post('/api/question-images/upload', formDataToSend, {
-        headers: { 'Content-Type': 'multipart/form-data' }
-      })
+      const response = await api.post('/api/question-images/upload', formDataToSend)
 
       if (response.data && response.data.image_id) {
         // Update the question's image_id in local state
@@ -136,6 +137,7 @@ const QuestionPaperGeneration = () => {
 
         // Create a local object URL for immediate display
         const localUrl = URL.createObjectURL(file)
+        blobUrlsRef.current.push(localUrl)
         setQuestionImages(prev => ({ ...prev, [compositeId]: localUrl }))
 
         showToast('Image uploaded successfully!', 'success')
@@ -149,11 +151,12 @@ const QuestionPaperGeneration = () => {
   }
 
   const closePreview = () => {
-    Object.values(questionImages).forEach(url => {
+    blobUrlsRef.current.forEach(url => {
       if (url && url.startsWith('blob:')) {
         URL.revokeObjectURL(url)
       }
     })
+    blobUrlsRef.current = []
     setQuestionImages({})
     setShowPreview(false)
   }
