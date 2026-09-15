@@ -8,7 +8,7 @@ import re
 import tempfile
 from pathlib import Path
 from datetime import datetime
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from uuid import uuid4
 from docx import Document
 from docx.shared import Pt, Inches
@@ -526,7 +526,7 @@ def fetch_questions_for_part(
     
     # ✅ Strategy 1: Match by difficulty and marks (NO part name filter)
     query = f"""
-        SELECT id, content, part, unit, topic, difficulty, marks 
+        SELECT id, content, part, unit, topic, difficulty, marks, image_id 
         FROM questions 
         WHERE question_bank_id = {placeholder}
     """
@@ -552,7 +552,7 @@ def fetch_questions_for_part(
     if len(result) < count and difficulty:
         print(f"     Trying Strategy 2 (difficulty only)...")
         query = f"""
-            SELECT id, content, part, unit, topic, difficulty, marks 
+            SELECT id, content, part, unit, topic, difficulty, marks, image_id 
             FROM questions 
             WHERE question_bank_id = {placeholder}
             AND LOWER(difficulty) = LOWER({placeholder})
@@ -567,7 +567,7 @@ def fetch_questions_for_part(
     if len(result) < count and marks:
         print(f"     Trying Strategy 3 (marks-based)...")
         query = f"""
-            SELECT id, content, part, unit, topic, difficulty, marks 
+            SELECT id, content, part, unit, topic, difficulty, marks, image_id 
             FROM questions 
             WHERE question_bank_id = {placeholder}
             AND ABS(marks - {placeholder}) < 2.0
@@ -582,7 +582,7 @@ def fetch_questions_for_part(
     if len(result) < count:
         print(f"     Trying Strategy 4 (any questions)...")
         query = f"""
-            SELECT id, content, part, unit, topic, difficulty, marks 
+            SELECT id, content, part, unit, topic, difficulty, marks, image_id 
             FROM questions 
             WHERE question_bank_id = {placeholder}
             ORDER BY {rand_func}
@@ -599,6 +599,49 @@ def fetch_questions_for_part(
     
     # Convert Row objects to dictionaries
     return [dict(row) for row in result]
+
+
+def _resolve_question_image(
+    q: Dict,
+    used_image_ids: set,
+    trace_label: str,
+    allowed_sources: List[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    Resolve the image to embed for a question.
+
+    Priority:
+      1. The question's own stored image (image_id) - the exact image used to
+         generate the question. This guarantees the image appears in the paper.
+      2. A freshly searched image (web / user-upload / book) based on question text.
+
+    Returns an image dict containing `image_blob` or None.
+    """
+    image_id = (q or {}).get('image_id')
+    if image_id:
+        try:
+            from services.image_service import ImageService
+
+            stored = ImageService.get_image_by_id(int(image_id))
+        except Exception as exc:
+            logger.warning(f"Could not load stored image {image_id}: {exc}")
+            stored = None
+        if stored and stored.get('image_blob'):
+            stored.setdefault('id', int(image_id))
+            stored.setdefault('source_type', 'database')
+            stored.setdefault('description', stored.get('description') or 'Related image')
+            return stored
+
+    try:
+        return get_image_for_question(
+            q.get('content', ''),
+            used_image_ids,
+            trace_label=trace_label,
+            allowed_sources=allowed_sources,
+        )
+    except Exception as exc:
+        logger.error(f"Image search failed for question ({trace_label}): {exc}")
+    return None
 
 
 def generate_docx_paper(
@@ -743,7 +786,7 @@ def generate_docx_paper(
             
             # Try to fetch and insert image for this question
             try:
-                image_data = get_image_for_question(q['content'], used_image_ids, trace_label=f"docx_q{question_number}", allowed_sources=image_sources) if need_image else None
+                image_data = _resolve_question_image(q, used_image_ids, trace_label=f"docx_q{question_number}", allowed_sources=image_sources) if (need_image or q.get('image_id')) else None
                 if image_data and image_data.get('image_blob'):
                     # Track this image to avoid duplicates
                     if image_data.get('id'):
@@ -1134,7 +1177,7 @@ def generate_pdf_paper(
             # Try to fetch and insert image for this question
             temp_image_paths = []
             try:
-                image_data = get_image_for_question(q['content'], used_image_ids, trace_label=f"pdf_q{question_number}", allowed_sources=image_sources) if need_image else None
+                image_data = _resolve_question_image(q, used_image_ids, trace_label=f"pdf_q{question_number}", allowed_sources=image_sources) if (need_image or q.get('image_id')) else None
                 if image_data and image_data.get('image_blob'):
                     # Track this image to avoid duplicates
                     if image_data.get('id'):

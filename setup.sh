@@ -148,7 +148,7 @@ fi
 
 # # Pull Mistral model
 # print_info "Pulling Mistral model (this may take several minutes on first run)..."
-# ollama pull mistral:latest
+# ollama pull gemma4:12b
 # print_success "Mistral model ready"
 
 echo ""

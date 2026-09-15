@@ -1091,6 +1091,7 @@ def run_generate_questions(job_id: str, subject_id: int, request: QuestionGenera
             return
 
         total_needed = sum(item.count for item in request.plan) if request.plan else request.count
+        total_needed += max(0, int(request.image_questions or 0))
         update_job_progress(job_id, 0, total_needed, f"Generating {total_needed} questions...")
 
         all_questions = []
@@ -1143,6 +1144,36 @@ def run_generate_questions(job_id: str, subject_id: int, request: QuestionGenera
                 cancel_check=is_cancelled,
                 progress_callback=on_progress,
             )
+
+        # Generate additional questions FROM images (web-search / user-upload / book)
+        image_question_count = max(0, int(request.image_questions or 0))
+        if image_question_count > 0 and not is_cancelled():
+            print(f"🖼️ Generating up to {image_question_count} image-based questions...")
+            try:
+                from services.image_question_generator import generate_image_questions, encode_image_data_for_json
+
+                def img_progress(batch_completed, batch_target):
+                    update_job_progress(job_id, len(all_questions) + batch_completed, total_needed)
+
+                img_questions = generate_image_questions(
+                    topics=topics,
+                    count=image_question_count,
+                    marks=request.marks,
+                    difficulty=request.difficulty,
+                    part_name=request.part_name,
+                    image_sources=request.image_sources,
+                    ai_provider=request.ai_provider,
+                    context=context_str,
+                    blooms_level=None,
+                    cancel_check=is_cancelled,
+                    progress_callback=img_progress,
+                )
+                all_questions.extend(encode_image_data_for_json(q) for q in img_questions)
+                update_job_progress(job_id, len(all_questions), total_needed)
+            except Exception as img_err:
+                print(f"❌ Image-based question generation failed: {img_err}")
+                import traceback
+                traceback.print_exc()
 
         if is_cancelled():
             print(f"Job {job_id} was cancelled before finalizing.")
@@ -1219,6 +1250,7 @@ def _run_generate_all_questions(job_id: str, subject_id: int, requests: List[Que
             grand_total += sum(item.count for item in req.plan)
         else:
             grand_total += req.count
+        grand_total += max(0, int(req.image_questions or 0))
 
     def increment_progress(delta_count):
         with progress_lock:
@@ -1371,6 +1403,37 @@ def _run_generate_all_questions(job_id: str, subject_id: int, requests: List[Que
                         cancel_check=is_cancelled,
                         progress_callback=on_progress,
                     )
+
+                # Additional questions generated FROM images for this request
+                image_question_count = max(0, int(req.image_questions or 0))
+                if image_question_count > 0 and not is_cancelled():
+                    try:
+                        from services.image_question_generator import generate_image_questions, encode_image_data_for_json
+
+                        def img_progress(batch_completed, batch_target):
+                            delta = batch_completed - prev_batch_completed[0]
+                            if delta > 0:
+                                prev_batch_completed[0] = batch_completed
+                                increment_progress(delta)
+
+                        img_questions = generate_image_questions(
+                            topics=topics,
+                            count=image_question_count,
+                            marks=req.marks,
+                            difficulty=req.difficulty,
+                            part_name=req.part_name,
+                            image_sources=req.image_sources,
+                            ai_provider=req.ai_provider,
+                            context=context_str,
+                            blooms_level=None,
+                            cancel_check=is_cancelled,
+                            progress_callback=img_progress,
+                        )
+                        all_questions.extend(encode_image_data_for_json(q) for q in img_questions)
+                    except Exception as img_err:
+                        print(f"❌ Image-based question generation failed for {req.part_name}: {img_err}")
+                        import traceback
+                        traceback.print_exc()
 
                 return {
                     'part_name': req.part_name,
@@ -2224,6 +2287,34 @@ def search_subjects(q: str = "", limit: int = 50):
             connection.close()
         raise HTTPException(status_code=500, detail=f"Search error: {str(e)}")
 
+@app.get("/api/question-images/{image_id}")
+def get_question_image_by_id(image_id: int):
+    """Get a stored question image (by image id) so previews can embed the exact image."""
+    try:
+        from services.image_service import ImageService
+        from fastapi.responses import StreamingResponse
+        import io
+
+        stored = ImageService.get_image_by_id(image_id)
+        if not stored or not stored.get('image_blob'):
+            raise HTTPException(status_code=404, detail="Image not found")
+
+        mime = stored.get('mime_type') or 'image/png'
+        media_type = mime if str(mime).startswith('image/') else 'image/png'
+        return StreamingResponse(
+            io.BytesIO(stored['image_blob']),
+            media_type=media_type,
+            headers={
+                "Content-Disposition": f"inline; filename=question_image_{image_id}.png"
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error fetching image by id {image_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error fetching image: {str(e)}")
+
+
 @app.get("/api/questions/{question_id}/image")
 def get_question_image(question_id: int):
     """Get image for a specific question for preview"""
@@ -2239,8 +2330,8 @@ def get_question_image(question_id: int):
         cursor = get_cursor(connection)
         placeholder = get_placeholder()
         
-        # Fetch question content
-        cursor.execute(f"SELECT content FROM questions WHERE id = {placeholder}", (question_id,))
+        # Fetch question content and associated image
+        cursor.execute(f"SELECT content, image_id FROM questions WHERE id = {placeholder}", (question_id,))
         question = cursor.fetchone()
         cursor.close()
         connection.close()
@@ -2248,16 +2339,34 @@ def get_question_image(question_id: int):
         if not question:
             raise HTTPException(status_code=404, detail="Question not found")
         
-        # Get image for the question - pass empty set for used ids in preview
-        image_data = get_image_for_question(question['content'], set(), trace_label=f"preview_q{question_id}")
+        image_blob = None
+        media_type = "image/png"
+        # Prefer the exact stored image used to generate this question
+        stored_image_id = question.get('image_id') if isinstance(question, dict) else None
+        if stored_image_id:
+            try:
+                from services.image_service import ImageService
+                stored = ImageService.get_image_by_id(int(stored_image_id))
+                if stored and stored.get('image_blob'):
+                    image_blob = stored['image_blob']
+                    mime = stored.get('mime_type') or 'image/png'
+                    media_type = mime if str(mime).startswith('image/') else 'image/png'
+            except Exception as exc:
+                print(f"Error loading stored image {stored_image_id}: {exc}")
         
-        if not image_data or not image_data.get('image_blob'):
+        # Fallback: search for a relevant image based on question content
+        if not image_blob:
+            image_data = get_image_for_question(question['content'], set(), trace_label=f"preview_q{question_id}")
+            if image_data and image_data.get('image_blob'):
+                image_blob = image_data['image_blob']
+        
+        if not image_blob:
             raise HTTPException(status_code=404, detail="No image found for this question")
         
         # Return image as blob
         return StreamingResponse(
-            io.BytesIO(image_data['image_blob']),
-            media_type="image/png",
+            io.BytesIO(image_blob),
+            media_type=media_type,
             headers={
                 "Content-Disposition": f"inline; filename=question_{question_id}_image.png"
             }
@@ -2471,6 +2580,104 @@ def create_blueprint(blueprint: BlueprintCreate):
             connection.rollback()
             connection.close()
         raise HTTPException(status_code=500, detail=f"Error creating blueprint: {str(e)}")
+
+@app.put("/api/blueprints/{blueprint_id}", response_model=BlueprintResponse)
+def update_blueprint(blueprint_id: int, blueprint: BlueprintCreate):
+    """Update an existing blueprint (name, description, and parts structure)."""
+    connection = get_db_connection()
+    if not connection:
+        raise HTTPException(status_code=500, detail="Database connection failed")
+
+    try:
+        placeholder = get_placeholder()
+        cursor = get_cursor(connection)
+
+        cursor.execute(f"SELECT id, file_path FROM blueprints WHERE id = {placeholder}", (blueprint_id,))
+        existing = cursor.fetchone()
+        if not existing:
+            connection.close()
+            raise HTTPException(status_code=404, detail="Blueprint not found")
+
+        total_questions = sum(part.num_questions for part in blueprint.parts_config)
+        total_marks = sum(part.num_questions * part.marks_per_question for part in blueprint.parts_config)
+
+        json_data = {
+            "name": blueprint.name,
+            "description": blueprint.description or "",
+            "total_marks": total_marks,
+            "total_questions": total_questions,
+            "parts": [
+                {
+                    "part_name": part.part_name,
+                    "instructions": part.instructions or "Answer all questions",
+                    "num_questions": part.num_questions,
+                    "marks_per_question": part.marks_per_question,
+                    "difficulty": part.difficulty
+                }
+                for part in blueprint.parts_config
+            ]
+        }
+
+        # Reuse the existing JSON file path when available to avoid orphaned files
+        file_path = None
+        existing_path = existing.get("file_path") if existing else None
+        if existing_path:
+            try:
+                with open(existing_path, "w", encoding='utf-8') as f:
+                    json.dump(json_data, f, indent=2, ensure_ascii=False)
+                file_path = existing_path
+            except Exception:
+                file_path = None
+
+        if not file_path:
+            blueprints_dir = UPLOAD_DIR / "blueprints"
+            blueprints_dir.mkdir(exist_ok=True)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            safe_name = "".join(c if c.isalnum() or c in (' ', '-', '_') else '_' for c in blueprint.name)
+            safe_name = safe_name.replace(' ', '_')[:50]
+            file_name = f"{safe_name}_{timestamp}.json"
+            file_path = str(blueprints_dir / file_name)
+            with open(file_path, "w", encoding='utf-8') as f:
+                json.dump(json_data, f, indent=2, ensure_ascii=False)
+
+        cursor.execute(
+            f"""UPDATE blueprints 
+               SET name = {placeholder}, description = {placeholder}, file_path = {placeholder}, 
+                   total_questions = {placeholder}, total_marks = {placeholder}, updated_at = CURRENT_TIMESTAMP
+               WHERE id = {placeholder}""",
+            (blueprint.name, blueprint.description, file_path, total_questions, total_marks, blueprint_id)
+        )
+
+        cursor.execute(f"DELETE FROM blueprint_parts WHERE blueprint_id = {placeholder}", (blueprint_id,))
+        for i, part in enumerate(blueprint.parts_config):
+            cursor.execute(
+                f"""INSERT INTO blueprint_parts 
+                   (blueprint_id, part_order, part_name, instructions, num_questions, marks_per_question, difficulty)
+                   VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})""",
+                (blueprint_id, i + 1, part.part_name, part.instructions or "Answer all questions",
+                 part.num_questions, part.marks_per_question, part.difficulty)
+            )
+
+        connection.commit()
+
+        cursor.execute(f"SELECT * FROM blueprints WHERE id = {placeholder}", (blueprint_id,))
+        result = cursor.fetchone()
+
+        cursor.close()
+        connection.close()
+
+        print(f"✅ Updated blueprint ID: {blueprint_id}")
+        return dict(result)
+
+    except Exception as e:
+        print(f"❌ ERROR updating blueprint: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        if connection:
+            connection.rollback()
+            connection.close()
+        raise HTTPException(status_code=500, detail=f"Error updating blueprint: {str(e)}")
+
 
 @app.get("/api/blueprints", response_model=List[BlueprintResponse])
 def get_blueprints():

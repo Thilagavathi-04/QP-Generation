@@ -120,7 +120,7 @@ Blueprint:
    - **Hybrid LLM Mode**:
      1. **Try Ollama First** (Local, offline):
         - Connect to `http://ollama:11434` (Docker container)
-        - Model: `mistral:latest`
+        - Model: `gemma4:12b`
         - Generate prompt with context + blueprint parameters
         - Timeout: 30 seconds
      
@@ -502,7 +502,7 @@ qdrant_storage/          # Vector database
    ```python
    try:
        response = ollama_client.generate(
-           model="mistral:latest",
+           model="gemma4:12b",
            prompt=prompt,
            timeout=30
        )
@@ -719,7 +719,7 @@ qdrant_storage/          # Vector database
 
 1. **Ollama** (Local LLM):
    - URL: `http://ollama:11434`
-   - Model: `mistral:latest`
+   - Model: `gemma4:12b`
    - Fallback on timeout (30s)
 
 2. **Qdrant** (Vector DB):
