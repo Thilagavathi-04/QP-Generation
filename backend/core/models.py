@@ -22,6 +22,11 @@ class QuestionGenerationRequest(BaseModel):
     # Optional advanced per-unit plan; when provided, the backend will ignore
     # the single global `count`/`difficulty` and instead generate per plan item.
     plan: Optional[List[GenerationPlanItem]] = None
+    # Number of questions to generate FROM images (web-search / user-uploaded / book).
+    # Each generated question gets its source image embedded in the paper.
+    image_questions: int = 0
+    # Which image sources to use: 'web'/'web_search', 'user'/'user_uploaded', 'book'/'pdf_extraction'.
+    image_sources: Optional[List[str]] = None
 
 
 class SubjectCreate(BaseModel):

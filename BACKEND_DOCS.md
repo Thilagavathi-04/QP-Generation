@@ -249,7 +249,7 @@ async def generate_questions(request: QuestionGenerationRequest):
 ```python
 test_ollama_connection()
     ├─ Tests connection to Ollama at http://ollama:11434
-    └─ Returns True if "mistral:latest" model is available
+    └─ Returns True if "gemma4:12b" model is available
 
 generate_questions_with_ollama(context, count, difficulty, topics)
     ├─ Prepares detailed prompt with RAG context
@@ -277,7 +277,7 @@ get_blooms_instruction(level: str) -> str
 ```
 AI_MODE=hybrid                    # "offline" | "online" | "hybrid"
 OLLAMA_BASE_URL=http://ollama:11434
-OLLAMA_MODEL=mistral:latest
+OLLAMA_MODEL=gemma4:12b
 XAI_API_KEY=...                  # Fallback provider
 OPENAI_API_KEY=...               # Fallback provider
 GEMINI_API_KEY=...               # Fallback provider
@@ -1398,7 +1398,7 @@ DB_NAME=quest_generator
 # AI Configuration
 AI_MODE=hybrid                              # offline | online | hybrid
 OLLAMA_BASE_URL=http://ollama:11434
-OLLAMA_MODEL=mistral:latest
+OLLAMA_MODEL=gemma4:12b
 
 # Cloud LLM APIs (Fallback)
 XAI_API_KEY=xai_key_here

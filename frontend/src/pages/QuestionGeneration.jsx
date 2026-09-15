@@ -17,6 +17,8 @@ const QuestionGeneration = () => {
   const [isGenerating, setIsGenerating] = useState(false)
   const [showPartConfig, setShowPartConfig] = useState(false)
   const [aiProvider, setAiProvider] = useState('auto')
+  const [imageQuestionCount, setImageQuestionCount] = useState(0)
+  const [imageSources, setImageSources] = useState(['web', 'user', 'book'])
   const [expandedQuestions, setExpandedQuestions] = useState({})
   const [parts, setParts] = useState([])
   const [newPart, setNewPart] = useState({
@@ -168,6 +170,8 @@ const QuestionGeneration = () => {
                           difficulty: q.difficulty || newParts[pIndex].difficulty,
                           marks: q.marks || newParts[pIndex].markPerQuestion,
                           bloomsLevel: q.blooms_level || null,
+                          image_id: q.image_id || null,
+                          imageData: q.image_data || null,
                         }))
                         if (isRefreshing) {
                           const selectedQuestions = [...(newParts[pIndex].selectedQuestions || [])]
@@ -194,6 +198,8 @@ const QuestionGeneration = () => {
                     difficulty: q.difficulty || "medium",
                     marks: q.marks || 0,
                     bloomsLevel: q.blooms_level || null,
+                    image_id: q.image_id || null,
+                    imageData: q.image_data || null,
                  }))
 
                  setParts(prev => {
@@ -387,6 +393,8 @@ const QuestionGeneration = () => {
         part_name: parts[partIndex].name,
         ai_provider: aiProvider,
         topics: selectedTopicNames.length > 0 ? selectedTopicNames : null,
+        image_questions: imageQuestionCount,
+        image_sources: imageSources.length > 0 ? imageSources : null,
         plan: parts[partIndex].plan && parts[partIndex].plan.length > 0 ? parts[partIndex].plan : undefined,
       })
 
@@ -435,6 +443,8 @@ const QuestionGeneration = () => {
           difficulty: part.difficulty,
           part_name: part.name,
           ai_provider: aiProvider,
+          image_questions: imageQuestionCount,
+          image_sources: imageSources.length > 0 ? imageSources : null,
           plan: part.plan && part.plan.length > 0 ? part.plan : undefined,
           topics: selectedTopicNames.length > 0 ? selectedTopicNames : null
         }
@@ -485,7 +495,12 @@ const QuestionGeneration = () => {
           topic: q.topic ? String(q.topic) : "",
           difficulty: q.difficulty ? String(q.difficulty) : "medium",
           marks: q.marks ? parseFloat(q.marks) : 0,
-          blooms_level: q.bloomsLevel ? String(q.bloomsLevel) : null
+          blooms_level: q.bloomsLevel ? String(q.bloomsLevel) : null,
+          image_id: q.image_id ? parseInt(q.image_id) : null,
+          image_data: q.imageData ? {
+            data_url: q.imageData.data_url || null,
+            source_type: q.imageData.source_type || null
+          } : null
         })
       })
     })
@@ -796,6 +811,37 @@ const QuestionGeneration = () => {
               <option value="openai">OpenAI (Online)</option>
               <option value="gemini">Gemini (Online)</option>
             </select>
+          </div>
+          <div className="form-group">
+            <label className="form-label">Questions from Images</label>
+            <input
+              className="form-input"
+              type="number"
+              min="0"
+              value={imageQuestionCount}
+              onChange={(e) => setImageQuestionCount(Math.max(0, parseInt(e.target.value) || 0))}
+              placeholder="0"
+            />
+            <div style={{ display: 'flex', gap: '0.75rem', marginTop: '0.4rem' }}>
+              {['web', 'user', 'book'].map(src => (
+                <label key={src} style={{ fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                  <input
+                    type="checkbox"
+                    checked={imageSources.includes(src)}
+                    onChange={(e) => {
+                      setImageSources(prev => {
+                        if (e.target.checked) return [...new Set([...prev, src])]
+                        return prev.filter(s => s !== src)
+                      })
+                    }}
+                  />
+                  {src === 'web' ? 'Web' : src === 'user' ? 'Uploaded' : 'Book'}
+                </label>
+              ))}
+            </div>
+            {/* <span style={{ fontSize: '0.7rem', color: 'var(--secondary-500)' }}>
+              AI analyzes each image and generates a question about it; the image is embedded in the paper.
+            </span> */}
           </div>
           <div className="form-group" style={{ display: 'flex', alignItems: 'flex-end' }}>
             <button
@@ -1466,7 +1512,29 @@ const QuestionGeneration = () => {
                             <span style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', color: 'var(--primary-600)', fontSize: '0.85rem', fontWeight: '600' }}>
                               🎯 {question.marks} marks
                             </span>
+                            {question.image_id && (
+                              <span style={{
+                                padding: '0.25rem 0.6rem',
+                                borderRadius: '6px',
+                                fontSize: '0.75rem',
+                                fontWeight: '600',
+                                backgroundColor: '#f3e8ff',
+                                color: '#7c3aed',
+                                letterSpacing: '0.02em'
+                              }}>
+                                🖼️ Includes image
+                              </span>
+                            )}
                           </div>
+                          {question.imageData?.data_url && (
+                            <div style={{ marginTop: '0.75rem' }}>
+                              <img
+                                src={question.imageData.data_url}
+                                alt="Question image"
+                                style={{ maxWidth: '240px', maxHeight: '160px', border: '1px solid var(--secondary-200)', borderRadius: '6px' }}
+                              />
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>

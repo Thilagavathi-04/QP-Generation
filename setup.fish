@@ -368,7 +368,7 @@ end
 print_info "Pulling Mistral model..."
 print_info "This may take several minutes."
 
-ollama pull mistral:latest
+ollama pull gemma4:12b
 
 print_success "Mistral model ready"
 
@@ -466,7 +466,7 @@ if not test -f .env
         '' \
         '# Ollama' \
         'OLLAMA_HOST=http://localhost:11434' \
-        'OLLAMA_MODEL=mistral:latest' \
+        'OLLAMA_MODEL=gemma4:12b' \
         > .env
 
     print_success ".env file created"
@@ -611,7 +611,7 @@ echo ""
 
 echo "🤖 Ollama:"
 echo "  Host: http://localhost:11434"
-echo "  Model: mistral:latest"
+echo "  Model: gemma4:12b"
 echo ""
 
 echo "🚀 Start Backend:"

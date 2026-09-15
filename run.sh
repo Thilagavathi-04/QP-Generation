@@ -5,6 +5,11 @@
 
 set -e  # Exit on any error
 
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BACKEND_DIR="$ROOT_DIR/backend"
+FRONTEND_DIR="$ROOT_DIR/frontend"
+LOG_DIR="$ROOT_DIR/logs"
+
 echo "=========================================="
 echo "Quest Generator - Starting Services"
 echo "=========================================="
@@ -55,7 +60,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 # Check if setup has been run
-if [ ! -d "backend/venv" ] || [ ! -d "frontend/node_modules" ]; then
+if [ ! -d "$BACKEND_DIR/.venv" ] || [ ! -d "$FRONTEND_DIR/node_modules" ]; then
     print_error "Project not set up. Please run ./setup.sh first"
     exit 1
 fi
@@ -70,11 +75,11 @@ fi
 # fi
 
 # Create log directory
-mkdir -p logs
+mkdir -p "$LOG_DIR"
 
 # 1. Start Ollama in background
 print_service "Starting Ollama service..."
-ollama serve > logs/ollama.log 2>&1 &
+ollama serve > "$LOG_DIR/ollama.log" 2>&1 &
 OLLAMA_PID=$!
 sleep 3
 
@@ -86,27 +91,28 @@ fi
 
 # 2. Start Backend in background
 print_service "Starting Backend (FastAPI)..."
-cd backend
-source venv/bin/activate
-uvicorn main:app --reload --port 8010 > ../logs/backend.log 2>&1 &
+
+cd "$BACKEND_DIR"
+uv run uvicorn main:app --reload --port 8010 > "$LOG_DIR/backend.log" 2>&1 &
 BACKEND_PID=$!
-deactivate
-cd ..
+cd "$ROOT_DIR"
+
 sleep 3
 
 if ps -p $BACKEND_PID > /dev/null; then
     print_success "Backend started (PID: $BACKEND_PID) - http://127.0.0.1:8010"
 else
     print_error "Backend failed to start. Check logs/backend.log"
+    pwd
     exit 1
 fi
 
 # 3. Start Frontend in background
 print_service "Starting Frontend (Vite)..."
-cd frontend
-npm run dev > ../logs/frontend.log 2>&1 &
+cd "$FRONTEND_DIR"
+npm run dev > "$LOG_DIR/frontend.log" 2>&1 &
 FRONTEND_PID=$!
-cd ..
+cd "$ROOT_DIR"
 sleep 5
 
 if ps -p $FRONTEND_PID > /dev/null; then

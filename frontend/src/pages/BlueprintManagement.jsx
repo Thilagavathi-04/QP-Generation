@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { Plus, Upload, Edit, Trash2, Eye, FileText, X } from 'lucide-react'
+import { Plus, Upload, Save, Edit, Trash2, Eye, FileText, X } from 'lucide-react'
 import api from '../utils/api'
 import { showToast } from '../utils/toast'
 import Modal from '../components/Modal'
@@ -7,6 +7,7 @@ import Modal from '../components/Modal'
 const BlueprintManagement = () => {
   const [blueprints, setBlueprints] = useState([])
   const [showCreateForm, setShowCreateForm] = useState(false)
+  const [editingBlueprintId, setEditingBlueprintId] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [modalState, setModalState] = useState({ isOpen: false, type: '', data: null })
@@ -143,15 +144,17 @@ const BlueprintManagement = () => {
 
       console.log('Sending blueprint data:', JSON.stringify(payload, null, 2))
 
-      const response = await api.post('/api/blueprints', payload)
+      const response = editingBlueprintId
+        ? await api.put(`/api/blueprints/${editingBlueprintId}`, payload)
+        : await api.post('/api/blueprints', payload)
 
       if (response.data) {
-        showToast('Blueprint created successfully!', 'success')
+        showToast(editingBlueprintId ? 'Blueprint updated successfully!' : 'Blueprint created successfully!', 'success')
         resetForm()
         await fetchBlueprints()
       }
     } catch (err) {
-      console.error('Error creating blueprint:', err)
+      console.error(editingBlueprintId ? 'Error updating blueprint:' : 'Error creating blueprint:', err)
       console.error('Full error response:', err.response)
       console.error('Error data:', err.response?.data)
 
@@ -177,6 +180,35 @@ const BlueprintManagement = () => {
     }
   }
 
+  const startEdit = async (blueprint) => {
+    try {
+      const response = await api.get(`/api/blueprints/${blueprint.id}`)
+      const fullBlueprint = response.data
+
+      const parts = (fullBlueprint.parts && fullBlueprint.parts.length > 0)
+        ? fullBlueprint.parts.map(part => ({
+            part_name: part.part_name || 'Part A',
+            instructions: part.instructions || 'Answer all questions',
+            num_questions: part.num_questions || 10,
+            marks_per_question: part.marks_per_question || 2,
+            difficulty: part.difficulty || 'easy'
+          }))
+        : []
+
+      setFormData({
+        name: fullBlueprint.name || '',
+        description: fullBlueprint.description || '',
+        parts: parts.length > 0 ? parts : [{ part_name: 'Part A', instructions: 'Answer all questions', num_questions: 10, marks_per_question: 2, difficulty: 'easy' }]
+      })
+      setEditingBlueprintId(blueprint.id)
+      setShowCreateForm(true)
+      window.scrollTo({ top: 0, behavior: 'smooth' })
+    } catch (err) {
+      console.error('Error loading blueprint for edit:', err)
+      showToast('Failed to load blueprint for editing', 'error')
+    }
+  }
+
   const resetForm = () => {
     setFormData({
       name: '',
@@ -191,6 +223,7 @@ const BlueprintManagement = () => {
         }
       ]
     })
+    setEditingBlueprintId(null)
     setShowCreateForm(false)
   }
 
@@ -279,7 +312,25 @@ const BlueprintManagement = () => {
             </p>
           </div>
           <button
-            onClick={() => setShowCreateForm(!showCreateForm)}
+            onClick={() => {
+              if (showCreateForm) {
+                setEditingBlueprintId(null)
+                setFormData({
+                  name: '',
+                  description: '',
+                  parts: [
+                    {
+                      part_name: 'Part A',
+                      instructions: 'Answer all questions',
+                      num_questions: 10,
+                      marks_per_question: 2,
+                      difficulty: 'easy'
+                    }
+                  ]
+                })
+              }
+              setShowCreateForm(!showCreateForm)
+            }}
             className="btn"
             style={{
               background: 'white',
@@ -298,9 +349,11 @@ const BlueprintManagement = () => {
 
       {showCreateForm && (
         <div className="card">
-          <h2 className="card-title">Create New Blueprint</h2>
+          <h2 className="card-title">{editingBlueprintId ? 'Edit Blueprint' : 'Create New Blueprint'}</h2>
           <p style={{ color: '#666', marginBottom: '1.5rem' }}>
-            Configure your question paper structure with multiple parts and instructions.
+            {editingBlueprintId
+              ? `Editing "${formData.name || 'Blueprint'}". Update the structure and save your changes.`
+              : 'Configure your question paper structure with multiple parts and instructions.'}
           </p>
 
           <form onSubmit={handleSubmit}>
@@ -492,8 +545,8 @@ const BlueprintManagement = () => {
                 Cancel
               </button>
               <button type="submit" className="btn btn-primary">
-                <Upload size={16} />
-                Create Blueprint
+                {editingBlueprintId ? <Save size={16} /> : <Upload size={16} />}
+                {editingBlueprintId ? 'Update Blueprint' : 'Create Blueprint'}
               </button>
             </div>
           </form>
@@ -526,6 +579,14 @@ const BlueprintManagement = () => {
                     title="View Details"
                   >
                     <Eye size={16} />
+                  </button>
+                  <button
+                    onClick={() => startEdit(blueprint)}
+                    className="btn btn-secondary"
+                    style={{ fontSize: '0.875rem', padding: '0.5rem' }}
+                    title="Edit Blueprint"
+                  >
+                    <Edit size={16} />
                   </button>
                   <button
                     onClick={() => handleDelete(blueprint.id)}

@@ -84,7 +84,7 @@ Creating high-quality exam papers is **labor-intensive** and **time-consuming**.
 - MySQL (relational data)
 - Qdrant (vector DB for RAG)
 - SentenceTransformers (`all-MiniLM-L6-v2`) for embeddings
-- Hybrid LLM: Ollama (`mistral:latest`) + xAI API fallback
+- Hybrid LLM: Ollama (`gemma4:12b`) + xAI API fallback
 
 ### Frontend
 - React + Vite
@@ -319,7 +319,7 @@ for question in selected_questions:
 - MySQL (relational data)
 - Qdrant (vector DB for RAG)
 - SentenceTransformers (`all-MiniLM-L6-v2`) for embeddings
-- Hybrid LLM: Ollama (`mistral:latest`) + xAI API fallback
+- Hybrid LLM: Ollama (`gemma4:12b`) + xAI API fallback
 
 ### Frontend
 - React + Vite
@@ -399,7 +399,7 @@ docker-compose -f docker-compose.prod.yml up -d
 ```bash
 # Install Ollama from https://ollama.ai
 # Then pull the mistral model:
-ollama pull mistral:latest
+ollama pull gemma4:12b
 
 # Start Ollama service (runs in background):
 ollama serve
@@ -483,7 +483,7 @@ AI_MODE=hybrid
 
 # Ollama (Offline LLM)
 OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=mistral:latest
+OLLAMA_MODEL=gemma4:12b
 
 # xAI (Grok-2)
 XAI_BASE_URL=https://api.x.ai/v1
@@ -821,7 +821,7 @@ DB_PASSWORD=quest_pass
 # ========================
 AI_MODE=hybrid                 # 'hybrid', 'online', 'offline'
 OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=mistral:latest
+OLLAMA_MODEL=gemma4:12b
 
 # xAI (Grok-2 - powerful reasoning)
 XAI_BASE_URL=https://api.x.ai/v1
@@ -1123,7 +1123,7 @@ ollama serve
 ollama list | grep mistral
 
 # Pull model if missing
-ollama pull mistral:latest
+ollama pull gemma4:12b
 ```
 
 #### Backend Returns "500 Internal Server Error"
@@ -1621,7 +1621,7 @@ logger.error(f"Failed to process PDF: {error}")
 
 **Pull latest Ollama model:**
 ```bash
-ollama pull mistral:latest
+ollama pull gemma4:12b
 ollama pull neural-chat:latest  # Alternative model to test with
 ollama list  # See installed models
 ```

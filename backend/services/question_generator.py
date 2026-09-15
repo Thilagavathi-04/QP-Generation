@@ -638,12 +638,12 @@ def generate_questions_with_ollama(
                 }}
               ]
             }}
-            """      
-            Do not include any conversational text, markdown formatting (except the JSON itself), or explanations.
-            """
+          
         # --- END: DYNAMIC PROMPT SELECTION ---
 
         # Track the Bloom level used in the prompt for attaching to each question
+
+        """
         blooms_for_prompt: Optional[str] = None
         if marks > 1:
             blooms_for_prompt = effective_blooms_level

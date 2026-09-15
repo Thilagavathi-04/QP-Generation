@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { FileOutput, Download, Calendar, Clock, X, Edit2, RefreshCw, Save } from 'lucide-react'
 import api from '../utils/api'
 import { showToast } from '../utils/toast'
@@ -14,6 +14,7 @@ const QuestionPaperGeneration = () => {
   const [showPreview, setShowPreview] = useState(false)
   const [previewView, setPreviewView] = useState('pdf') // 'pdf' or 'cards'
   const [pdfPreviewUrl, setPdfPreviewUrl] = useState(null)
+  const pdfPreviewUrlRef = useRef(null)
   const [generatedPapers, setGeneratedPapers] = useState([])
   const [questionImages, setQuestionImages] = useState({}) // Map of question_id -> image_url
   const [loadingImages, setLoadingImages] = useState(false)
@@ -45,6 +46,27 @@ const QuestionPaperGeneration = () => {
       setFormData(prev => ({ ...prev, questionBankId: '' }))
     }
   }, [formData.subjectId])
+
+  // Live PDF preview: always rebuild from the CURRENT generatedPapers (the actual papers),
+  // so the preview is never static/stale relative to edits & regenerations.
+  useEffect(() => {
+    let cancelled = false
+    if (showPreview && previewView === 'pdf' && generatedPapers.length > 0) {
+      ;(async () => {
+        try {
+          const doc = await buildPdfDoc(generatedPapers)
+          if (cancelled) return
+          const url = URL.createObjectURL(doc.output('blob'))
+          if (pdfPreviewUrlRef.current) URL.revokeObjectURL(pdfPreviewUrlRef.current)
+          pdfPreviewUrlRef.current = url
+          setPdfPreviewUrl(url)
+        } catch (e) {
+          console.error('PDF preview generation error:', e)
+        }
+      })()
+    }
+    return () => { cancelled = true }
+  }, [showPreview, previewView, generatedPapers, formData])
 
   useEffect(() => {
     if (showPreview && generatedPapers.length > 0) {
@@ -152,6 +174,7 @@ const QuestionPaperGeneration = () => {
 
   const regenerateQuestion = async (setIndex, partIndex, questionIndex) => {
     const part = generatedPapers[setIndex].parts[partIndex]
+    const currentQuestion = generatedPapers[setIndex].parts[partIndex].questions[questionIndex]
 
     try {
       showToast('Regenerating question...', 'info')
@@ -162,30 +185,73 @@ const QuestionPaperGeneration = () => {
         count: 1,
         marks: part.marks_per_question,
         difficulty: part.difficulty,
-        part_name: part.part_name
+        part_name: part.part_name,
+        ai_provider: 'auto'
       })
 
-      if (response.data.success && response.data.questions.length > 0) {
-        const newQuestion = {
-          id: `regenerated-${Date.now()}-${Math.random()}`,
-          content: response.data.questions[0].content,
-          unit: response.data.questions[0].unit,
-          topic: response.data.questions[0].topic,
-          difficulty: response.data.questions[0].difficulty || part.difficulty,
-          marks: response.data.questions[0].marks || part.marks_per_question
-        }
-
-        setGeneratedPapers(prev => {
-          const updated = [...prev]
-          updated[setIndex].parts[partIndex].questions[questionIndex] = newQuestion
-          return updated
-        })
-
-        showToast('Question regenerated successfully!', 'success')
+      const jobId = response.data.job_id
+      if (!jobId) {
+        showToast('Generation job could not be started', 'error')
+        return
       }
+
+      // Backend runs generation in the background, so poll the job until it completes.
+      const newQuestion = await new Promise((resolve, reject) => {
+        let attempts = 0
+        const interval = setInterval(async () => {
+          attempts += 1
+          try {
+            const jobRes = await api.get(`/api/jobs/${jobId}`)
+            const status = jobRes.data.status
+            if (status === 'completed') {
+              clearInterval(interval)
+              const result = jobRes.data.result || {}
+              const q = (result.questions && result.questions[0]) || null
+              if (!q || !q.content) {
+                reject(new Error('No question was generated'))
+                return
+              }
+              const hasImage = q.image_id || q.image_data
+              resolve({
+                id: `regenerated-${Date.now()}-${Math.random()}`,
+                content: q.content,
+                unit: q.unit,
+                topic: q.topic,
+                difficulty: q.difficulty || part.difficulty,
+                marks: q.marks || part.marks_per_question,
+                bloomsLevel: q.blooms_level || null,
+                // Preserve the figure when the regenerated question doesn't ship its own image
+                image_id: hasImage ? (q.image_id || null) : (currentQuestion.image_id || null),
+                imageData: hasImage ? (q.image_data || null) : (currentQuestion.imageData || null)
+              })
+            } else if (status === 'failed' || status === 'cancelled' || status === 'stopped') {
+              clearInterval(interval)
+              reject(new Error(jobRes.data.error || `Generation ${status}`))
+            } else if (attempts > 300) {
+              clearInterval(interval)
+              reject(new Error('Generation timed out'))
+            }
+          } catch (err) {
+            clearInterval(interval)
+            reject(err)
+          }
+        }, 1500)
+      })
+
+      setGeneratedPapers(prev => {
+        const updated = [...prev]
+        updated[setIndex] = { ...updated[setIndex] }
+        updated[setIndex].parts = [...updated[setIndex].parts]
+        updated[setIndex].parts[partIndex] = { ...updated[setIndex].parts[partIndex] }
+        updated[setIndex].parts[partIndex].questions = [...updated[setIndex].parts[partIndex].questions]
+        updated[setIndex].parts[partIndex].questions[questionIndex] = newQuestion
+        return updated
+      })
+
+      showToast('Question regenerated successfully!', 'success')
     } catch (error) {
       console.error('Error regenerating question:', error)
-      showToast('Failed to regenerate question', 'error')
+      showToast('Failed to regenerate question: ' + (error.message || 'Unknown error'), 'error', 5000)
     }
   }
 
@@ -219,7 +285,69 @@ const QuestionPaperGeneration = () => {
     }
   }
 
+  // Load the stored image attached to a question (used to generate the question)
+  const loadQuestionImageData = async (q) => {
+    if (!q?.image_id) return null
+    try {
+      const response = await api.get(`/api/question-images/${q.image_id}`, {
+        responseType: 'blob'
+      })
+      const contentType = response.headers?.['content-type'] || 'image/png'
+      const dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => resolve(reader.result)
+        reader.onerror = reject
+        reader.readAsDataURL(response.data)
+      })
+      return { dataUrl, mime: contentType.includes('jpeg') || contentType.includes('jpg') ? 'JPEG' : 'PNG' }
+    } catch (error) {
+      console.warn(`Failed to load image for question image_id=${q.image_id}:`, error)
+      return null
+    }
+  }
+
+  // Preload all question images so they can be drawn into the jsPDF document
+  const preloadQuestionImages = async () => {
+    const imageCache = {}
+    const questions = generatedPapers.flatMap(p =>
+      (p.parts || []).flatMap(part => (part.questions || []).filter(q => q.image_id))
+    )
+    await Promise.all(
+      questions.map(async q => {
+        imageCache[q.id] = { data: await loadQuestionImageData(q), image_id: q.image_id }
+      })
+    )
+    return imageCache
+  }
+
+  // Draw a question image into the pdf at (x, y); returns the height consumed
+  const drawQuestionImage = (doc, imgData, x, y) => {
+    if (!imgData?.dataUrl) return 0
+    try {
+      const imgProps = doc.getImageProperties(imgData.dataUrl)
+      let drawW = imgProps?.width || 120
+      let drawH = imgProps?.height || 100
+      const maxW = 100
+      const maxH = 120
+      const scale = Math.min(1, maxW / drawW, maxH / drawH)
+      drawW *= scale
+      drawH *= scale
+      doc.addImage(imgData.dataUrl, imgData.mime || 'PNG', x, y, drawW, drawH)
+      return drawH + 6
+    } catch (error) {
+      console.warn('Error drawing question image:', error)
+      return 0
+    }
+  }
+
   const generatePDF = async (papers, filename) => {
+    const doc = await buildPdfDoc(papers)
+    doc.save(filename)
+  }
+
+  // Builds the full question paper PDF document (used for both download and live preview).
+  // Kept in one place so the preview always shows the REAL generated paper (not static data).
+  const buildPdfDoc = async (papers) => {
     const [{ jsPDF }] = await Promise.all([
       import('jspdf'),
       import('jspdf-autotable')
@@ -229,6 +357,7 @@ const QuestionPaperGeneration = () => {
     const selectedSubject = subjects.find(s => s.id === parseInt(formData.subjectId))
     const examDate = formData.examDate ? new Date(formData.examDate).toLocaleDateString() : new Date().toLocaleDateString()
     const courseOutcomeAsset = await loadCourseOutcomeAsset(selectedSubject)
+    const questionImages = await preloadQuestionImages()
 
     papers.forEach((paper, paperIndex) => {
       if (paperIndex > 0) doc.addPage()
@@ -310,6 +439,13 @@ const QuestionPaperGeneration = () => {
           doc.text(questionLines, 22, yPos)
           
           yPos += (questionLines.length * 5) + 4
+
+          const cachedImage = questionImages[q.id]
+          if (cachedImage?.data?.dataUrl) {
+            if (yPos > 270) { doc.addPage(); yPos = 20 }
+            yPos += drawQuestionImage(doc, cachedImage.data, 50, yPos)
+          }
+
           qNum++
         })
         yPos += 5
@@ -350,7 +486,7 @@ const QuestionPaperGeneration = () => {
       doc.text('*** End of Question Paper ***', 105, yPos + 10, { align: 'center' })
     })
 
-    doc.save(filename)
+    return doc
   }
 
   const downloadPaper = async (paper) => {
@@ -546,7 +682,9 @@ const QuestionPaperGeneration = () => {
               topic: q.topic,
               difficulty: q.difficulty,
               marks: q.marks,
-              bloomsLevel: q.blooms_level || q.bloomsLevel || null
+              bloomsLevel: q.blooms_level || q.bloomsLevel || null,
+              image_id: q.image_id || null,
+              imageData: q.image_data || null
             }))
           })
         }
@@ -646,70 +784,7 @@ const QuestionPaperGeneration = () => {
               }}>
                 <button
                   type="button"
-                  onClick={async () => {
-                    setPreviewView('pdf')
-                    if (!pdfPreviewUrl && generatedPapers.length > 0) {
-                      try {
-                        const [{ jsPDF }] = await Promise.all([
-                          import('jspdf'),
-                          import('jspdf-autotable')
-                        ])
-                        // Generate PDF blob for live preview inside iframe
-                        const selectedSubject = subjects.find(s => s.id === parseInt(formData.subjectId))
-                        const doc = new jsPDF()
-                        const examDate = formData.examDate ? new Date(formData.examDate).toLocaleDateString() : new Date().toLocaleDateString()
-
-                        generatedPapers.forEach((paper, paperIndex) => {
-                          if (paperIndex > 0) doc.addPage()
-                          doc.setFont('helvetica', 'bold')
-                          doc.setFontSize(14)
-                          doc.text('SRI SHAKTHI INSTITUTE OF ENGINEERING AND TECHNOLOGY', 105, 17, { align: 'center' })
-                          doc.setFontSize(11)
-                          doc.text('(An Autonomous Institution)', 105, 23, { align: 'center' })
-                          doc.setFont('helvetica', 'normal')
-                          doc.setFontSize(8.5)
-                          doc.text('Coimbatore - 641 062, Tamil Nadu, India', 105, 28, { align: 'center' })
-                          doc.line(10, 32, 200, 32)
-                          
-                          doc.setFontSize(12)
-                          doc.setFont('helvetica', 'bold')
-                          doc.text(`${formData.title} (${paper.setName})`, 105, 42, { align: 'center' })
-                          doc.setFontSize(10)
-                          doc.setFont('helvetica', 'normal')
-                          doc.text(`Subject: ${selectedSubject?.name || 'N/A'}`, 15, 50)
-                          doc.text(`Date: ${examDate}`, 150, 50)
-                          doc.line(10, 54, 200, 54)
-
-                          let yPos = 65
-                          let qNum = 1
-                          paper.parts.forEach((part) => {
-                            if (yPos > 260) { doc.addPage(); yPos = 20 }
-                            doc.setFont('helvetica', 'bold')
-                            doc.setFontSize(11)
-                            doc.text(part.part_name, 15, yPos)
-                            yPos += 8
-
-                            part.questions.forEach((q) => {
-                              if (yPos > 270) { doc.addPage(); yPos = 20 }
-                              doc.setFont('helvetica', 'bold')
-                              doc.text(`${qNum}.`, 15, yPos)
-                              doc.setFont('helvetica', 'normal')
-                              const lines = doc.splitTextToSize(q.content, 170)
-                              doc.text(lines, 22, yPos)
-                              yPos += (lines.length * 5) + 6
-                              qNum++
-                            })
-                            yPos += 4
-                          })
-                        })
-
-                        const blob = doc.output('blob')
-                        setPdfPreviewUrl(URL.createObjectURL(blob))
-                      } catch (e) {
-                        console.error('PDF preview generation error:', e)
-                      }
-                    }
-                  }}
+                  onClick={() => setPreviewView('pdf')}
                   className={`btn ${previewView === 'pdf' ? 'btn-primary' : 'btn-secondary'}`}
                   style={{ padding: '0.4rem 0.8rem', fontSize: '0.85rem', borderRadius: '6px' }}
                 >
