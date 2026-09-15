@@ -272,6 +272,20 @@ class ImageService:
         return rows[0] if rows else None
 
     @staticmethod
+    def get_image_for_question_id(question_id: int) -> Optional[Dict[str, Any]]:
+        placeholder = get_placeholder()
+        query = f"""
+            SELECT qi.id, qi.keywords, qi.description, qi.caption, qi.context, qi.image_blob, qi.source_type, qi.source_reference,
+                   qi.file_name, qi.file_path, qi.file_hash, qi.mime_type, qi.width, qi.height
+            FROM questions q
+            JOIN question_images qi ON (q.image_id = qi.id)
+            WHERE q.id = {placeholder}
+            LIMIT 1
+        """
+        rows = ImageService._execute_and_fetch(query, [question_id])
+        return rows[0] if rows else None
+
+    @staticmethod
     def search_images(query: str, limit: int = 10) -> List[Dict[str, Any]]:
         placeholder = get_placeholder()
         query_terms = (query or "").lower().split()

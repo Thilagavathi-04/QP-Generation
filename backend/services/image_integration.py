@@ -34,15 +34,33 @@ def _slugify(value: str, limit: int = 32) -> str:
     return result[:limit] or "image"
 
 
+def get_image_source_log_tag(source_type: str | None) -> str:
+    """
+    Returns standardized human-readable log tag for image sources.
+    - web_search -> [IMAGE SOURCE: WEB SEARCH]
+    - pdf_extraction / book / textbook -> [IMAGE SOURCE: EXTRACTED FROM BOOK]
+    - user_uploaded / user / manual -> [IMAGE SOURCE: USER ADDED IMAGE]
+    - default / database -> [IMAGE SOURCE: DATABASE IMAGE]
+    """
+    normalized = (source_type or "").strip().lower()
+    if normalized in {"pdf_extraction", "textbook", "book"}:
+        return "[IMAGE SOURCE: EXTRACTED FROM BOOK]"
+    if normalized in {"web_search", "web", "web_searched"}:
+        return "[IMAGE SOURCE: WEB SEARCH]"
+    if normalized in {"user_uploaded", "user", "manual", "user_added"}:
+        return "[IMAGE SOURCE: USER ADDED IMAGE]"
+    return "[IMAGE SOURCE: DATABASE IMAGE]"
+
+
 def _describe_source_type(source_type: str | None) -> str:
     normalized = (source_type or "").strip().lower()
     if normalized in {"pdf_extraction", "textbook", "book"}:
-        return "textbook image"
-    if normalized == "web_search":
-        return "web searched image"
-    if normalized in {"database", "db"}:
-        return "database image"
-    return normalized or "unknown"
+        return "Extracted from Book"
+    if normalized in {"web_search", "web", "web_searched"}:
+        return "Web Search"
+    if normalized in {"user_uploaded", "user", "manual", "user_added"}:
+        return "User Added Image"
+    return "Database Image"
 
 
 class ImageGenerationTrace:
@@ -193,26 +211,27 @@ def detect_image_required_in_question(question_text: str) -> bool:
 
 def extract_keywords_from_question(question_text: str) -> list:
     """
-    Extract relevant keywords from the question for image search.
-    
-    Args:
-        question_text: The question content
-        
-    Returns:
-        List of extracted keywords
+    Extract relevant domain keywords from the question for image search.
     """
     keywords = []
     
-    # Extract nouns and meaningful phrases
-    stop_words = {'the', 'a', 'an', 'and', 'or', 'is', 'are', 'was', 'were',
-                  'draw', 'show', 'explain', 'describe', 'define', 'of', 'for',
-                  'with', 'by', 'from', 'to', 'in', 'on', 'at', 'be', 'have',
-                  'has', 'do', 'does', 'did', 'will', 'would', 'could', 'should'}
+    stop_words = {
+        'the', 'a', 'an', 'and', 'or', 'is', 'are', 'was', 'were',
+        'draw', 'show', 'explain', 'describe', 'define', 'of', 'for',
+        'with', 'by', 'from', 'to', 'in', 'on', 'at', 'be', 'have',
+        'has', 'do', 'does', 'did', 'will', 'would', 'could', 'should',
+        'justify', 'evaluate', 'discuss', 'examine', 'compare', 'analyze',
+        'concept', 'method', 'methods', 'effectiveness', 'potential', 'drawbacks',
+        'implementation', 'advantages', 'disadvantages', 'compared', 'their',
+        'your', 'answer', 'detailed', 'need', 'using', 'various', 'different',
+        'given', 'following', 'write', 'state', 'list', 'about', 'which', 'what',
+        'how', 'when', 'where', 'each', 'type', 'types', 'role', 'briefly'
+    }
     
     words = question_text.lower().split()
     for word in words:
-        word_clean = word.strip('.,;:?!')
-        if len(word_clean) > 3 and word_clean not in stop_words and word_clean.isalpha():
+        word_clean = word.strip('.,;:?!()[]{}"\'')
+        if len(word_clean) > 2 and word_clean not in stop_words and word_clean.isalpha():
             keywords.append(word_clean)
     
     # Remove duplicates while preserving order
@@ -223,7 +242,7 @@ def extract_keywords_from_question(question_text: str) -> list:
             seen.add(kw)
             unique_keywords.append(kw)
     
-    return unique_keywords[:15]  # Return top 15 keywords
+    return unique_keywords[:6]  # Return top 6 domain keywords
 
 
 def get_image_for_question(
@@ -273,30 +292,40 @@ def get_image_for_question(
                 s_clean = s.strip().lower()
                 if 'web' in s_clean:
                     sources_norm.add('web_search')
-                elif 'book' in s_clean or 'textbook' in s_clean or 'pdf' in s_clean:
+                if 'book' in s_clean or 'textbook' in s_clean or 'pdf' in s_clean:
                     sources_norm.add('pdf_extraction')
                     sources_norm.add('book')
                     sources_norm.add('textbook')
-                elif 'user' in s_clean or 'upload' in s_clean:
+                if 'user' in s_clean or 'upload' in s_clean or 'db' in s_clean:
                     sources_norm.add('user_uploaded')
                     sources_norm.add('user')
                     sources_norm.add('database')
         
-        # If no sources specified or all requested, search all
-        if not sources_norm:
-            sources_norm = {'web_search', 'pdf_extraction', 'book', 'textbook', 'user_uploaded', 'user', 'database'}
+        # Build allowed DB source categories strictly according to user selections
+        db_allowed_sources = set()
+        if any(s in sources_norm for s in {'pdf_extraction', 'book', 'textbook'}):
+            db_allowed_sources.update({'pdf_extraction', 'book', 'textbook'})
+        if any(s in sources_norm for s in {'user_uploaded', 'user', 'database'}):
+            db_allowed_sources.update({'user_uploaded', 'user', 'database'})
+        if 'web_search' in sources_norm:
+            db_allowed_sources.update({'web_search'})
 
-        logger.info(f"Retrieving image for question with keywords: {keywords}, normalized sources: {sources_norm}")
+        if not db_allowed_sources:
+            db_allowed_sources = {'pdf_extraction', 'book', 'textbook', 'user_uploaded', 'user', 'database', 'web_search'}
+
+        logger.info(f"Retrieving image for question: '{question_text[:80]}...' | Keywords: {keywords} | Allowed Sources: {sources_norm} | DB Allowed: {db_allowed_sources}")
         
-        # Strategy 1: Search Database if Book Images or User Uploaded Images allowed
-        allow_db = any(src in sources_norm for src in {'pdf_extraction', 'book', 'textbook', 'user_uploaded', 'user', 'database'})
-        if allow_db:
-            logger.debug(f"Searching database for images matching sources: {sources_norm}")
-            trace.add_step("Database search", f"Searching DB for sources: {sources_norm}")
-            image_data = _search_database_for_image(question_text, keywords, used_image_ids, allowed_source_types=sources_norm)
+        # Strategy 1: Search Database using allowed DB source types
+        if db_allowed_sources:
+            logger.debug(f"Searching database for images matching allowed DB sources: {db_allowed_sources}")
+            trace.add_step("Database search", f"Searching DB for allowed sources: {db_allowed_sources}")
+            image_data = _search_database_for_image(question_text, keywords, used_image_ids, allowed_source_types=db_allowed_sources)
             if image_data:
-                logger.info(f"✅ Found image in database - source: {image_data.get('source_type')}")
-                trace.add_step("Database result", f"Selected {_trace_from_source_type(image_data.get('source_type'))}")
+                source_tag = get_image_source_log_tag(image_data.get('source_type'))
+                log_line = f"✅ {source_tag} Found image in database (ID: {image_data.get('id')}) for question: '{question_text[:80]}...'"
+                logger.info(log_line)
+                print(f"\n{log_line}\n")
+                trace.add_step("Database result", f"Selected {_trace_from_source_type(image_data.get('source_type'))} ({source_tag})")
                 trace.finalize("selected", image_data=image_data)
                 return image_data
 
@@ -317,7 +346,7 @@ def get_image_for_question(
                                 keywords=", ".join(keywords),
                                 description=image_data.get('description', 'Web search image'),
                                 image_blob=image_data['image_blob'],
-                                source_type=image_data.get('source_type', 'web_search'),
+                                source_type='web_search',
                                 source_reference=image_data.get('source_reference'),
                                 file_name=image_data.get('file_name'),
                             )
@@ -326,8 +355,11 @@ def get_image_for_question(
                         except Exception as persist_error:
                             logger.warning(f"Unable to persist web image: {persist_error}")
 
-                    logger.info(f"✅ Found image via web search - source: {image_data.get('source_type')}")
-                    trace.add_step("Web search result", f"Retrieved {_trace_from_source_type(image_data.get('source_type'))} (confidence: {image_data.get('confidence', 'N/A')})")
+                    source_tag = get_image_source_log_tag(image_data.get('source_type'))
+                    log_line = f"✅ {source_tag} Retrieved image via web search for question: '{question_text[:80]}...'"
+                    logger.info(log_line)
+                    print(f"\n{log_line}\n")
+                    trace.add_step("Web search result", f"Retrieved {source_tag} (confidence: {image_data.get('confidence', 'N/A')})")
                     trace.finalize("selected", image_data=image_data)
                     return image_data
                 else:
@@ -353,8 +385,8 @@ def get_image_for_question(
         return None
 
 
-MIN_IMAGE_MATCH_SCORE = 0.55
-MIN_IMAGE_MATCH_MARGIN = 0.03
+MIN_IMAGE_MATCH_SCORE = 0.35
+MIN_IMAGE_MATCH_MARGIN = 0.02
 
 def calculate_image_match_score(question_text: str, img: Dict[str, Any], keywords: list) -> float:
     score = 0.0

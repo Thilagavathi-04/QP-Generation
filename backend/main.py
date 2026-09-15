@@ -63,7 +63,7 @@ import jwt
 
 JWT_SECRET = os.getenv('JWT_SECRET', 'super-secret-key-change-me-to-something-secure-for-production')
 JWT_ALGORITHM = 'HS256'
-ALLOWED_ORIGINS = os.getenv('ALLOWED_ORIGINS', 'http://localhost:5173,http://localhost:5174,http://localhost:3000').split(',')
+ALLOWED_ORIGINS = os.getenv('ALLOWED_ORIGINS', 'http://localhost:5173,http://localhost:5174,http://localhost:3000,http://127.0.0.1:5173,http://127.0.0.1:5174,http://127.0.0.1:3000,http://127.0.0.1:8010,http://localhost:8010').split(',')
 from pathlib import Path
 
 from email.message import EmailMessage
@@ -169,6 +169,7 @@ app = FastAPI(title="Quest Generator API", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:[0-9]+)?",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -2225,7 +2226,7 @@ def search_subjects(q: str = "", limit: int = 50):
         raise HTTPException(status_code=500, detail=f"Search error: {str(e)}")
 
 @app.get("/api/questions/{question_id}/image")
-def get_question_image(question_id: int):
+def get_question_image(question_id: int, sources: Optional[str] = None):
     """Get image for a specific question for preview"""
     try:
         from services.image_integration import get_image_for_question
@@ -2248,8 +2249,10 @@ def get_question_image(question_id: int):
         if not question:
             raise HTTPException(status_code=404, detail="Question not found")
         
-        # Get image for the question - pass empty set for used ids in preview
-        image_data = get_image_for_question(question['content'], set(), trace_label=f"preview_q{question_id}")
+        allowed_sources = [s.strip() for s in sources.split(',')] if sources else None
+
+        # Get image for the question - pass allowed_sources
+        image_data = get_image_for_question(question['content'], set(), trace_label=f"preview_q{question_id}", allowed_sources=allowed_sources)
         
         if not image_data or not image_data.get('image_blob'):
             raise HTTPException(status_code=404, detail="No image found for this question")
@@ -2515,6 +2518,88 @@ def get_blueprint(blueprint_id: int):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching blueprint: {str(e)}")
+
+
+@app.put("/api/blueprints/{blueprint_id}")
+def update_blueprint(blueprint_id: int, blueprint: BlueprintCreate):
+    """Update an existing blueprint and its parts"""
+    connection = get_db_connection()
+    if not connection:
+        raise HTTPException(status_code=500, detail="Database connection failed")
+    
+    try:
+        cursor = get_cursor(connection)
+        placeholder = get_placeholder()
+        
+        cursor.execute(f"SELECT * FROM blueprints WHERE id = {placeholder}", (blueprint_id,))
+        existing = cursor.fetchone()
+        if not existing:
+            cursor.close()
+            connection.close()
+            raise HTTPException(status_code=404, detail="Blueprint not found")
+        
+        total_questions = sum(part.num_questions for part in blueprint.parts_config)
+        total_marks = sum(part.num_questions * part.marks_per_question for part in blueprint.parts_config)
+        
+        # Update blueprints table
+        cursor.execute(
+            f"""UPDATE blueprints 
+               SET name = {placeholder}, description = {placeholder}, 
+                   total_questions = {placeholder}, total_marks = {placeholder}
+               WHERE id = {placeholder}""",
+            (blueprint.name, blueprint.description, total_questions, total_marks, blueprint_id)
+        )
+        
+        # Delete existing parts for this blueprint
+        cursor.execute(f"DELETE FROM blueprint_parts WHERE blueprint_id = {placeholder}", (blueprint_id,))
+        
+        # Re-insert updated parts
+        for i, part in enumerate(blueprint.parts_config):
+            cursor.execute(
+                f"""INSERT INTO blueprint_parts 
+                   (blueprint_id, part_order, part_name, instructions, num_questions, marks_per_question, difficulty)
+                   VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})""",
+                (blueprint_id, i + 1, part.part_name, part.instructions or "Answer all questions", 
+                 part.num_questions, part.marks_per_question, part.difficulty)
+            )
+        
+        connection.commit()
+        
+        # Update JSON file if file_path exists
+        file_path = existing.get("file_path") if isinstance(existing, dict) else None
+        if file_path and os.path.exists(file_path):
+            json_data = {
+                "name": blueprint.name,
+                "description": blueprint.description or "",
+                "total_marks": total_marks,
+                "total_questions": total_questions,
+                "parts": [
+                    {
+                        "part_name": part.part_name,
+                        "instructions": part.instructions or "Answer all questions",
+                        "num_questions": part.num_questions,
+                        "marks_per_question": part.marks_per_question,
+                        "difficulty": part.difficulty
+                    }
+                    for part in blueprint.parts_config
+                ]
+            }
+            with open(file_path, "w", encoding='utf-8') as f:
+                json.dump(json_data, f, indent=2, ensure_ascii=False)
+        
+        cursor.execute(f"SELECT * FROM blueprints WHERE id = {placeholder}", (blueprint_id,))
+        result = cursor.fetchone()
+        
+        cursor.close()
+        connection.close()
+        
+        return dict(result)
+        
+    except Exception as e:
+        if connection:
+            connection.rollback()
+            connection.close()
+        raise HTTPException(status_code=500, detail=f"Error updating blueprint: {str(e)}")
 
 
 

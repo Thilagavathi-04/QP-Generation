@@ -24,7 +24,9 @@ from services.image_integration import (
     detect_image_required_in_question,
     get_image_for_question,
     save_image_blob_to_temp,
-    cleanup_temp_image_file
+    cleanup_temp_image_file,
+    get_image_source_log_tag,
+    _describe_source_type
 )
 from services.rag_config import logger
 
@@ -743,11 +745,40 @@ def generate_docx_paper(
             
             # Try to fetch and insert image for this question
             try:
-                image_data = get_image_for_question(q['content'], used_image_ids, trace_label=f"docx_q{question_number}", allowed_sources=image_sources) if need_image else None
+                image_data = None
+                if q.get('remove_image'):
+                    image_data = None
+                    logger.info(f"Question {question_number}: Image explicitly removed by user.")
+                else:
+                    if q.get('image_id'):
+                        try:
+                            from services.image_service import ImageService
+                            img_row = ImageService.get_image_by_id(q['image_id'])
+                            if img_row and img_row.get('image_blob'):
+                                image_data = img_row
+                        except Exception as img_err:
+                            logger.warning(f"Failed to fetch image_id {q['image_id']}: {img_err}")
+
+                    if not image_data and q.get('db_id'):
+                        try:
+                            from services.image_service import ImageService
+                            img_row = ImageService.get_image_for_question_id(q['db_id'])
+                            if img_row and img_row.get('image_blob'):
+                                image_data = img_row
+                        except Exception:
+                            pass
+                    
+                    if not image_data and need_image:
+                        image_data = get_image_for_question(q['content'], used_image_ids, trace_label=f"docx_q{question_number}", allowed_sources=image_sources)
+                
                 if image_data and image_data.get('image_blob'):
                     # Track this image to avoid duplicates
                     if image_data.get('id'):
                         used_image_ids.add(image_data.get('id'))
+
+                    source_tag = get_image_source_log_tag(image_data.get('source_type'))
+                    logger.info(f"📝 DOCX Question {question_number}: {source_tag} (ID: {image_data.get('id')}) - Description: '{image_data.get('description', '')}'")
+                    print(f"\n🖼️ 📝 [DOCX Q{question_number}] {source_tag} (ID: {image_data.get('id')}) - '{image_data.get('description', '')[:60]}'\n")
                     
                     # Save original extracted image to temp file without modifications
                     img_temp_path = save_image_blob_to_temp(image_data['image_blob'])
@@ -758,16 +789,9 @@ def generate_docx_paper(
                             img_para.paragraph_format.left_indent = Inches(0.6)
                             run = img_para.add_run()
                             run.add_picture(img_temp_path, width=Inches(4.0))
+                            doc.add_paragraph()
                             
-                            # Add small caption
-                            caption = doc.add_paragraph()
-                            caption.paragraph_format.left_indent = Inches(0.6)
-                            caption_run = caption.add_run(f"[{image_data.get('source_type', 'image')}]")
-                            caption_run.font.size = Pt(8)
-                            caption_run.italic = True
-                            
-                            # Mark for cleanup in co_temp_cleanup section
-                            logger.info(f"Added image for question {question_number}")
+                            logger.info(f"Added image for question {question_number} in DOCX ({source_tag})")
                         except Exception as e:
                             logger.error(f"Error adding image to DOCX: {e}")
                         finally:
@@ -1135,12 +1159,41 @@ def generate_pdf_paper(
             # Try to fetch and insert image for this question
             temp_image_paths = []
             try:
-                image_data = get_image_for_question(q['content'], used_image_ids, trace_label=f"pdf_q{question_number}", allowed_sources=image_sources) if need_image else None
+                image_data = None
+                if q.get('remove_image'):
+                    image_data = None
+                    logger.info(f"Question {question_number}: Image explicitly removed by user.")
+                else:
+                    if q.get('image_id'):
+                        try:
+                            from services.image_service import ImageService
+                            img_row = ImageService.get_image_by_id(q['image_id'])
+                            if img_row and img_row.get('image_blob'):
+                                image_data = img_row
+                        except Exception as img_err:
+                            logger.warning(f"Failed to fetch image_id {q['image_id']}: {img_err}")
+
+                    if not image_data and q.get('db_id'):
+                        try:
+                            from services.image_service import ImageService
+                            img_row = ImageService.get_image_for_question_id(q['db_id'])
+                            if img_row and img_row.get('image_blob'):
+                                image_data = img_row
+                        except Exception:
+                            pass
+
+                    if not image_data and need_image:
+                        image_data = get_image_for_question(q['content'], used_image_ids, trace_label=f"pdf_q{question_number}", allowed_sources=image_sources)
+                
                 if image_data and image_data.get('image_blob'):
                     # Track this image to avoid duplicates
                     if image_data.get('id'):
                         used_image_ids.add(image_data.get('id'))
-                    
+
+                    source_tag = get_image_source_log_tag(image_data.get('source_type'))
+                    logger.info(f"📄 PDF Question {question_number}: {source_tag} (ID: {image_data.get('id')}) - Description: '{image_data.get('description', '')}'")
+                    print(f"\n🖼️ 📄 [PDF Q{question_number}] {source_tag} (ID: {image_data.get('id')}) - '{image_data.get('description', '')[:60]}'\n")
+
                     # Save original extracted image to temp file without modifications
                     img_temp_path = save_image_blob_to_temp(image_data['image_blob'])
                     if img_temp_path:
@@ -1150,7 +1203,6 @@ def generate_pdf_paper(
                             img_w, img_h = img_reader.getSize()
                             
                             # Fit image inside a safe bounding box to avoid PDF layout overflow
-                            # after rotation (portrait images can become very tall).
                             max_width = 5.5 * inch
                             max_height = 3.2 * inch
                             if img_w > 0 and img_h > 0:
@@ -1168,15 +1220,10 @@ def generate_pdf_paper(
                                 f"PDF question {question_number}: draw size set to {draw_width:.1f}x{draw_height:.1f} points"
                             )
                             elements.append(img)
-                            elements.append(Spacer(1, 0.05*inch))
-                            
-                            # Add caption
-                            caption_text = f"<i>[Image: {image_data.get('description', 'Related image')} - {image_data.get('source_type', 'source')}]</i>"
-                            elements.append(Paragraph(caption_text, small_style))
                             elements.append(Spacer(1, 0.1*inch))
                             
                             temp_image_paths.append(img_temp_path)
-                            logger.info(f"Added image for question {question_number} in PDF")
+                            logger.info(f"Added image for question {question_number} in PDF ({source_tag})")
                         except Exception as e:
                             logger.error(f"Error adding image to PDF: {e}")
                             try:

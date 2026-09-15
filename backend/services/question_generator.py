@@ -638,7 +638,7 @@ def generate_questions_with_ollama(
                 }}
               ]
             }}
-            """      
+
             Do not include any conversational text, markdown formatting (except the JSON itself), or explanations.
             """
         # --- END: DYNAMIC PROMPT SELECTION ---

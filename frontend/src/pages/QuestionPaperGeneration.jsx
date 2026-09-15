@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react'
-import { FileOutput, Download, X, Edit2, RefreshCw, Save, Upload } from 'lucide-react'
+import { FileOutput, Download, X, Edit2, RefreshCw, Save, Upload, Trash2 } from 'lucide-react'
 import api from '../utils/api'
 import { showToast } from '../utils/toast'
 import Modal from '../components/Modal'
@@ -55,6 +55,33 @@ const QuestionPaperGeneration = () => {
   }, [showPreview, generatedPapers])
 
   useEffect(() => {
+    let isMounted = true
+    const updatePdfPreview = async () => {
+      if (showPreview && previewView === 'pdf' && generatedPapers.length > 0) {
+        try {
+          const doc = await buildJsPDFDocument(generatedPapers)
+          const blob = doc.output('blob')
+          const url = URL.createObjectURL(blob)
+          if (isMounted) {
+            setPdfPreviewUrl(prevUrl => {
+              if (prevUrl && prevUrl.startsWith('blob:')) {
+                URL.revokeObjectURL(prevUrl)
+              }
+              return url
+            })
+          }
+        } catch (e) {
+          console.error('PDF preview generation error:', e)
+        }
+      }
+    }
+    updatePdfPreview()
+    return () => {
+      isMounted = false
+    }
+  }, [showPreview, previewView, generatedPapers, questionImages])
+
+  useEffect(() => {
     return () => {
       blobUrlsRef.current.forEach(url => {
         if (url && url.startsWith('blob:')) {
@@ -66,6 +93,11 @@ const QuestionPaperGeneration = () => {
   }, [])
 
   const fetchQuestionImages = async () => {
+    if (formData.needImage !== 'yes') {
+      setQuestionImages({})
+      return
+    }
+
     try {
       setLoadingImages(true)
 
@@ -78,15 +110,29 @@ const QuestionPaperGeneration = () => {
       blobUrlsRef.current = []
 
       const images = {}
+      const mappedSources = (formData.imageSources || []).map(s => {
+        if (s === 'web') return 'web_search'
+        if (s === 'book') return 'pdf_extraction'
+        if (s === 'user') return 'user_uploaded'
+        return s
+      }).join(',')
       
       for (const paper of generatedPapers) {
         for (const part of paper.parts) {
           for (const question of part.questions) {
-            if (question.id) {
+            if (question.remove_image) continue
+            const rawDbId = question.db_id || (typeof question.id === 'string' && question.id.includes('-') ? question.id.split('-').pop() : question.id)
+            const numericId = parseInt(rawDbId)
+            if (numericId && !isNaN(numericId)) {
               try {
-                const response = await api.get(`/api/questions/${question.id}/image`, {
-                  responseType: 'blob'
+                const response = await api.get(`/api/questions/${numericId}/image?sources=${mappedSources}`, {
+                  responseType: 'blob',
+                  validateStatus: (status) => status === 200 || status === 404
                 })
+                if (response.status === 404 || (response.data && response.data.type === 'application/json')) {
+                  console.log(`No image for question ${question.id}`)
+                  continue
+                }
                 const imageUrl = URL.createObjectURL(response.data)
                 blobUrlsRef.current.push(imageUrl)
                 images[question.id] = imageUrl
@@ -107,6 +153,29 @@ const QuestionPaperGeneration = () => {
     }
   }
 
+  const handleRemoveImageForQuestion = (setIndex, partIndex, questionIndex) => {
+    const question = generatedPapers[setIndex].parts[partIndex].questions[questionIndex]
+    const compositeId = question.id
+
+    // Remove from preview images state
+    setQuestionImages(prev => {
+      const updated = { ...prev }
+      delete updated[compositeId]
+      return updated
+    })
+
+    // Mark question as remove_image: true in generatedPapers state
+    setGeneratedPapers(prev => {
+      const updated = [...prev]
+      const targetQ = updated[setIndex].parts[partIndex].questions[questionIndex]
+      targetQ.remove_image = true
+      targetQ.image_id = null
+      return updated
+    })
+
+    showToast('Image removed from question', 'info')
+  }
+
   const handleUploadImageForQuestion = async (setIndex, partIndex, questionIndex, file) => {
     const uploadKey = `${setIndex}-${partIndex}-${questionIndex}`
     try {
@@ -118,13 +187,17 @@ const QuestionPaperGeneration = () => {
       formDataToSend.append('keywords', question.content.substring(0, 100))
       formDataToSend.append('description', 'User uploaded image in preview')
 
-      const response = await api.post('/api/question-images/upload', formDataToSend)
+      const response = await api.post('/api/question-images/upload', formDataToSend, {
+        headers: { 'Content-Type': 'multipart/form-data' }
+      })
 
       if (response.data && response.data.image_id) {
-        // Update the question's image_id in local state
+        // Update the question's image_id in local state and clear remove_image flag
         setGeneratedPapers(prev => {
           const updated = [...prev]
-          updated[setIndex].parts[partIndex].questions[questionIndex].image_id = response.data.image_id
+          const targetQ = updated[setIndex].parts[partIndex].questions[questionIndex]
+          targetQ.image_id = response.data.image_id
+          targetQ.remove_image = false
           return updated
         })
 
@@ -229,37 +302,107 @@ const QuestionPaperGeneration = () => {
 
   const regenerateQuestion = async (setIndex, partIndex, questionIndex) => {
     const part = generatedPapers[setIndex].parts[partIndex]
+    const currentQ = part.questions[questionIndex]
 
     try {
       showToast('Regenerating question...', 'info')
 
-      const response = await api.post(`/api/subjects/${formData.subjectId}/generate-questions`, {
-        from_unit: formData.unitRange.from,
-        to_unit: formData.unitRange.to,
-        count: 1,
-        marks: part.marks_per_question,
-        difficulty: part.difficulty,
-        part_name: part.part_name
+      let allQuestions = []
+      if (formData.questionBankId) {
+        const questionsRes = await api.get(`/api/questions/bank/${formData.questionBankId}`)
+        allQuestions = questionsRes.data || []
+      }
+
+      if (!allQuestions.length && formData.subjectId) {
+        const res = await api.get(`/api/questions?subject_id=${formData.subjectId}`)
+        allQuestions = res.data || []
+      }
+
+      if (!allQuestions || allQuestions.length === 0) {
+        showToast('No alternative questions found in question bank', 'warning')
+        return
+      }
+
+      // Collect all currently used DB IDs across all sets and parts to avoid immediate duplicates
+      const usedDbIds = new Set()
+      generatedPapers.forEach(paper => {
+        paper.parts.forEach(p => {
+          p.questions.forEach(q => {
+            if (q.db_id) usedDbIds.add(q.db_id)
+          })
+        })
       })
 
-      if (response.data.success && response.data.questions.length > 0) {
-        const newQuestion = {
-          id: `regenerated-${Date.now()}-${Math.random()}`,
-          content: response.data.questions[0].content,
-          unit: response.data.questions[0].unit,
-          topic: response.data.questions[0].topic,
-          difficulty: response.data.questions[0].difficulty || part.difficulty,
-          marks: response.data.questions[0].marks || part.marks_per_question
-        }
+      // Filter matching questions by difficulty & marks
+      let candidates = allQuestions.filter(q => {
+        const matchesDifficulty = !part.difficulty || !q.difficulty || q.difficulty?.toLowerCase() === part.difficulty.toLowerCase()
+        const matchesMarks = !part.marks_per_question || !q.marks || parseFloat(q.marks) === parseFloat(part.marks_per_question)
+        return matchesDifficulty && matchesMarks
+      })
 
-        setGeneratedPapers(prev => {
-          const updated = [...prev]
-          updated[setIndex].parts[partIndex].questions[questionIndex] = newQuestion
-          return updated
-        })
-
-        showToast('Question regenerated successfully!', 'success')
+      if (candidates.length === 0) {
+        candidates = allQuestions.filter(q => !part.marks_per_question || !q.marks || parseFloat(q.marks) === parseFloat(part.marks_per_question))
       }
+
+      if (candidates.length === 0) {
+        candidates = allQuestions
+      }
+
+      // Try candidates not currently used
+      let unusedCandidates = candidates.filter(q => !usedDbIds.has(q.id) && q.id !== currentQ.db_id)
+      if (unusedCandidates.length === 0) {
+        unusedCandidates = candidates.filter(q => q.id !== currentQ.db_id)
+      }
+      if (unusedCandidates.length === 0) {
+        unusedCandidates = candidates
+      }
+
+      // Select random new question
+      const picked = unusedCandidates[Math.floor(Math.random() * unusedCandidates.length)]
+
+      const newQuestion = {
+        id: `set${setIndex}-${part.part_name}-${questionIndex}-${picked.id}`,
+        db_id: picked.id,
+        content: picked.content,
+        unit: picked.unit,
+        topic: picked.topic,
+        difficulty: picked.difficulty || part.difficulty,
+        marks: picked.marks || part.marks_per_question,
+        bloomsLevel: picked.blooms_level || picked.bloomsLevel || null,
+        remove_image: false
+      }
+
+      setGeneratedPapers(prev => {
+        const updated = [...prev]
+        updated[setIndex].parts[partIndex].questions[questionIndex] = newQuestion
+        return updated
+      })
+
+      // If images enabled, fetch image for new question
+      if (formData.needImage === 'yes' && picked.id) {
+        const mappedSources = (formData.imageSources || []).map(s => {
+          if (s === 'web') return 'web_search'
+          if (s === 'book') return 'pdf_extraction'
+          if (s === 'user') return 'user_uploaded'
+          return s
+        }).join(',')
+
+        try {
+          const imgRes = await api.get(`/api/questions/${picked.id}/image?sources=${mappedSources}`, {
+            responseType: 'blob',
+            validateStatus: (status) => status === 200 || status === 404
+          })
+          if (imgRes.status === 200 && imgRes.data && imgRes.data.type !== 'application/json') {
+            const imageUrl = URL.createObjectURL(imgRes.data)
+            blobUrlsRef.current.push(imageUrl)
+            setQuestionImages(prev => ({ ...prev, [newQuestion.id]: imageUrl }))
+          }
+        } catch (imgErr) {
+          console.log(`No image for newly regenerated question ${picked.id}`)
+        }
+      }
+
+      showToast('Question regenerated successfully!', 'success')
     } catch (error) {
       console.error('Error regenerating question:', error)
       showToast('Failed to regenerate question', 'error')
@@ -296,7 +439,16 @@ const QuestionPaperGeneration = () => {
     }
   }
 
-  const generatePDF = async (papers, filename) => {
+  const loadImageElement = (url) => new Promise((resolve) => {
+    if (!url) return resolve(null)
+    const img = new Image()
+    img.crossOrigin = 'Anonymous'
+    img.onload = () => resolve(img)
+    img.onerror = () => resolve(null)
+    img.src = url
+  })
+
+  const buildJsPDFDocument = async (papers) => {
     const [{ jsPDF }] = await Promise.all([
       import('jspdf'),
       import('jspdf-autotable')
@@ -307,13 +459,14 @@ const QuestionPaperGeneration = () => {
     const examDate = formData.examDate ? new Date(formData.examDate).toLocaleDateString() : new Date().toLocaleDateString()
     const courseOutcomeAsset = await loadCourseOutcomeAsset(selectedSubject)
 
-    papers.forEach((paper, paperIndex) => {
+    for (let paperIndex = 0; paperIndex < papers.length; paperIndex++) {
+      const paper = papers[paperIndex]
       if (paperIndex > 0) doc.addPage()
 
       // 🏛️ COLLEGE HEADER
       doc.setDrawColor(0)
       doc.setLineWidth(0.5)
-      doc.rect(10, 10, 190, 36) // Header box - Made taller for more text
+      doc.rect(10, 10, 190, 36) // Header box
 
       doc.setFont('helvetica', 'bold')
       doc.setFontSize(14)
@@ -363,8 +516,7 @@ const QuestionPaperGeneration = () => {
       let yPos = 110
       let qNum = 1
 
-      paper.parts.forEach((part) => {
-        // Part Title
+      for (const part of paper.parts) {
         if (yPos > 260) { doc.addPage(); yPos = 20 }
         doc.setFont('helvetica', 'bold')
         doc.setFontSize(11)
@@ -376,10 +528,11 @@ const QuestionPaperGeneration = () => {
         
         yPos += part.instructions ? 12 : 8
 
-        part.questions.forEach((q) => {
-          if (yPos > 270) { doc.addPage(); yPos = 20 }
+        for (const q of part.questions) {
+          if (yPos > 260) { doc.addPage(); yPos = 20 }
           
           doc.setFont('helvetica', 'bold')
+          doc.setFontSize(10)
           doc.text(`${qNum}.`, 15, yPos)
           
           doc.setFont('helvetica', 'normal')
@@ -387,10 +540,34 @@ const QuestionPaperGeneration = () => {
           doc.text(questionLines, 22, yPos)
           
           yPos += (questionLines.length * 5) + 4
+
+          const imgUrl = questionImages[q.id]
+          if (imgUrl && !q.remove_image) {
+            try {
+              const imgEl = await loadImageElement(imgUrl)
+              if (imgEl && imgEl.width > 0 && imgEl.height > 0) {
+                const maxWidth = 130
+                const maxHeight = 65
+                const scale = Math.min(maxWidth / imgEl.width, maxHeight / imgEl.height, 1)
+                const imgW = imgEl.width * scale
+                const imgH = imgEl.height * scale
+
+                if (yPos + imgH > 275) {
+                  doc.addPage()
+                  yPos = 20
+                }
+                doc.addImage(imgEl, 'PNG', 22, yPos, imgW, imgH)
+                yPos += imgH + 6
+              }
+            } catch (imgErr) {
+              console.warn(`Could not add image for question ${q.id} to PDF:`, imgErr)
+            }
+          }
+
           qNum++
-        })
+        }
         yPos += 5
-      })
+      }
       
       // Course Outcomes (if available)
       if (courseOutcomeAsset) {
@@ -425,8 +602,13 @@ const QuestionPaperGeneration = () => {
       doc.line(10, yPos, 200, yPos)
       doc.setFont('helvetica', 'italic')
       doc.text('*** End of Question Paper ***', 105, yPos + 10, { align: 'center' })
-    })
+    }
 
+    return doc
+  }
+
+  const generatePDF = async (papers, filename) => {
+    const doc = await buildJsPDFDocument(papers)
     doc.save(filename)
   }
 
@@ -497,7 +679,9 @@ const QuestionPaperGeneration = () => {
                 difficulty: q.difficulty,
                 blooms_level: q.bloomsLevel || null,
                 source: q.source || null,
-                image_id: q.image_id || null
+                remove_image: q.remove_image || false,
+                image_id: q.remove_image ? null : (q.image_id || null),
+                db_id: q.db_id || (typeof q.id === 'number' ? q.id : null)
               }))
             }))
           }
@@ -618,6 +802,7 @@ const QuestionPaperGeneration = () => {
             marks_per_question: part.marks_per_question,
             questions: selectedQuestions.map((q, i) => ({
               id: `set${setIndex}-${part.part_name}-${i}-${q.id}`,
+              db_id: q.id,
               content: q.content,
               unit: q.unit,
               topic: q.topic,
@@ -725,62 +910,13 @@ const QuestionPaperGeneration = () => {
                   type="button"
                   onClick={async () => {
                     setPreviewView('pdf')
-                    if (!pdfPreviewUrl && generatedPapers.length > 0) {
+                    if (generatedPapers.length > 0) {
                       try {
-                        const [{ jsPDF }] = await Promise.all([
-                          import('jspdf'),
-                          import('jspdf-autotable')
-                        ])
-                        // Generate PDF blob for live preview inside iframe
-                        const selectedSubject = subjects.find(s => s.id === parseInt(formData.subjectId))
-                        const doc = new jsPDF()
-                        const examDate = formData.examDate ? new Date(formData.examDate).toLocaleDateString() : new Date().toLocaleDateString()
-
-                        generatedPapers.forEach((paper, paperIndex) => {
-                          if (paperIndex > 0) doc.addPage()
-                          doc.setFont('helvetica', 'bold')
-                          doc.setFontSize(14)
-                          doc.text('SRI SHAKTHI INSTITUTE OF ENGINEERING AND TECHNOLOGY', 105, 17, { align: 'center' })
-                          doc.setFontSize(11)
-                          doc.text('(An Autonomous Institution)', 105, 23, { align: 'center' })
-                          doc.setFont('helvetica', 'normal')
-                          doc.setFontSize(8.5)
-                          doc.text('Coimbatore - 641 062, Tamil Nadu, India', 105, 28, { align: 'center' })
-                          doc.line(10, 32, 200, 32)
-                          
-                          doc.setFontSize(12)
-                          doc.setFont('helvetica', 'bold')
-                          doc.text(`${formData.title} (${paper.setName})`, 105, 42, { align: 'center' })
-                          doc.setFontSize(10)
-                          doc.setFont('helvetica', 'normal')
-                          doc.text(`Subject: ${selectedSubject?.name || 'N/A'}`, 15, 50)
-                          doc.text(`Date: ${examDate}`, 150, 50)
-                          doc.line(10, 54, 200, 54)
-
-                          let yPos = 65
-                          let qNum = 1
-                          paper.parts.forEach((part) => {
-                            if (yPos > 260) { doc.addPage(); yPos = 20 }
-                            doc.setFont('helvetica', 'bold')
-                            doc.setFontSize(11)
-                            doc.text(part.part_name, 15, yPos)
-                            yPos += 8
-
-                            part.questions.forEach((q) => {
-                              if (yPos > 270) { doc.addPage(); yPos = 20 }
-                              doc.setFont('helvetica', 'bold')
-                              doc.text(`${qNum}.`, 15, yPos)
-                              doc.setFont('helvetica', 'normal')
-                              const lines = doc.splitTextToSize(q.content, 170)
-                              doc.text(lines, 22, yPos)
-                              yPos += (lines.length * 5) + 6
-                              qNum++
-                            })
-                            yPos += 4
-                          })
-                        })
-
+                        const doc = await buildJsPDFDocument(generatedPapers)
                         const blob = doc.output('blob')
+                        if (pdfPreviewUrl && pdfPreviewUrl.startsWith('blob:')) {
+                          URL.revokeObjectURL(pdfPreviewUrl)
+                        }
                         setPdfPreviewUrl(URL.createObjectURL(blob))
                       } catch (e) {
                         console.error('PDF preview generation error:', e)
@@ -968,13 +1104,14 @@ const QuestionPaperGeneration = () => {
                               </div>
 
                               {/* Display question image if available */}
-                              {questionImages[question.id] && (
+                              {questionImages[question.id] && !question.remove_image && (
                                 <div style={{ 
                                   margin: '1rem 0',
                                   padding: '0.5rem',
                                   backgroundColor: '#f3f4f6',
                                   borderRadius: '4px',
-                                  textAlign: 'center'
+                                  textAlign: 'center',
+                                  position: 'relative'
                                 }}>
                                   <img 
                                     src={questionImages[question.id]} 
@@ -986,6 +1123,29 @@ const QuestionPaperGeneration = () => {
                                       border: '1px solid #d1d5db'
                                     }}
                                   />
+                                  <button
+                                    onClick={() => handleRemoveImageForQuestion(setIndex, partIndex, qIndex)}
+                                    className="btn btn-outline"
+                                    style={{
+                                      position: 'absolute',
+                                      top: '0.75rem',
+                                      right: '0.75rem',
+                                      backgroundColor: '#ffffff',
+                                      borderColor: '#ef4444',
+                                      color: '#ef4444',
+                                      padding: '0.35rem 0.65rem',
+                                      fontSize: '0.75rem',
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      gap: '0.25rem',
+                                      boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
+                                      cursor: 'pointer'
+                                    }}
+                                    title="Remove image from this question"
+                                  >
+                                    <Trash2 size={13} />
+                                    Remove Image
+                                  </button>
                                 </div>
                               )}
 

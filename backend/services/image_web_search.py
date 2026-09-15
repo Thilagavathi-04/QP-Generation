@@ -176,14 +176,26 @@ class ImageWebSearch:
             return images
         
         try:
-            logger.info(f"Searching DuckDuckGo for images: {keywords}")
+            # Stop words filtering to remove question boilerplate
+            stopwords = {
+                'true', 'false', 'match', 'following', 'which', 'what', 'where', 'describe',
+                'explain', 'steps', 'involved', 'implementing', 'concept', 'argue', 'importance',
+                'evaluate', 'performance', 'analyze', 'examine', 'terms', 'purpose', 'differs',
+                'other', 'context', 'than', 'more', 'less', 'case', 'time', 'best', 'worst',
+                'question', 'answer', 'select', 'choose', 'show', 'given', 'below', 'its'
+            }
+            clean_words = [w for w in keywords.split() if len(w) > 2 and w.lower() not in stopwords]
+            if not clean_words:
+                clean_words = [w for w in keywords.split() if len(w) > 2]
+            search_query = " ".join(clean_words[:4]) if clean_words else keywords
+            logger.info(f"Searching DuckDuckGo for images: '{search_query}' (original: '{keywords[:60]}...')")
             
             # Parse filter keywords
             filter_keywords = set()
             if keyword_filter:
                 filter_keywords = {k.strip().lower() for k in keyword_filter.split(',')}
             
-            # Fetch multiple pages for randomness strategy
+            # Fetch candidates
             candidates = []
             
             try:
@@ -194,10 +206,10 @@ class ImageWebSearch:
                 else:
                     ddgs = DDGS(timeout=10)
             except TypeError:
-                # Fallback for different versions
+                # Fallback for different versions without timeout/proxy args
                 try:
                     if IMAGE_SEARCH_PROXY:
-                        ddgs = DDGS(proxies=IMAGE_SEARCH_PROXY)
+                        ddgs = DDGS(proxy=IMAGE_SEARCH_PROXY)
                     else:
                         ddgs = DDGS()
                 except Exception as init_e:
@@ -205,47 +217,35 @@ class ImageWebSearch:
                     return images
             
             try:
-                # Fetch up to 3 pages (~300+ candidates)
-                for page_num in range(3):
+                # Try positional argument first, then query=, then keywords= for version compatibility
+                results = []
+                try:
+                    results = list(ddgs.images(search_query, region="en-US", max_results=50))
+                except TypeError:
                     try:
-                        # DuckDuckGo Images API with size filtering
-                        results = list(ddgs.images(
-                            keywords=keywords,
-                            region="en-US",
-                            size="Large",  # Pre-filter for large images
-                            max_results=100  # Max per page
-                        ))
+                        results = list(ddgs.images(query=search_query, region="en-US", max_results=50))
+                    except TypeError:
+                        results = list(ddgs.images(keywords=search_query, region="en-US", max_results=50))
+                
+                for result in results:
+                    try:
+                        image_url = result.get('image')
+                        if not image_url:
+                            continue
                         
-                        if not results:
-                            logger.debug(f"No results in page {page_num}")
-                            break
-                        
-                        for result in results:
-                            try:
-                                image_url = result.get('image')
-                                if not image_url:
-                                    continue
-                                
-                                # Apply keyword filter if specified
-                                if filter_keywords:
-                                    url_lower = image_url.lower()
-                                    if not any(kw in url_lower for kw in filter_keywords):
-                                        continue
-                                
-                                candidates.append({
-                                    "image_url": image_url,
-                                    "source_domain": urllib.parse.urlparse(image_url).netloc or "unknown",
-                                    "title": result.get('title', keywords),
-                                })
-                            except Exception as inner_e:
-                                logger.debug(f"Error processing DuckDuckGo result: {inner_e}")
+                        # Apply keyword filter if specified
+                        if filter_keywords:
+                            url_lower = image_url.lower()
+                            if not any(kw in url_lower for kw in filter_keywords):
                                 continue
                         
-                        # Polite delay between pages (1.5-6 seconds)
-                        time.sleep(random.uniform(1.5, 6.0))
-                    
-                    except Exception as page_e:
-                        logger.debug(f"Error fetching DuckDuckGo page {page_num}: {page_e}")
+                        candidates.append({
+                            "image_url": image_url,
+                            "source_domain": urllib.parse.urlparse(image_url).netloc or "unknown",
+                            "title": result.get('title', keywords),
+                        })
+                    except Exception as inner_e:
+                        logger.debug(f"Error processing DuckDuckGo result: {inner_e}")
                         continue
                 
                 logger.info(f"Collected {len(candidates)} candidates from DuckDuckGo")
@@ -608,6 +608,65 @@ class ImageWebSearch:
         except Exception as e:
             logger.error(f"Error verifying image: {e}")
             return 0.5  # Default to moderate confidence on error
+
+
+def search_image(topic: str, save_path: str = "result.jpg", timeout: int = 10) -> str | None:
+    """
+    Search the web for `topic` and download the first image result.
+
+    Args:
+        topic: What to search for, e.g. "golden retriever puppy".
+        save_path: Where to save the downloaded image.
+        timeout: Seconds to wait for the image download.
+
+    Returns:
+        The path to the saved image, or None if no image could be found/downloaded.
+    """
+    if not DDGS_AVAILABLE:
+        print("DDGS not available for image search")
+        return None
+
+    results = []
+    try:
+        ddgs = DDGS()
+        try:
+            results = list(ddgs.images(topic, max_results=10))
+        except TypeError:
+            try:
+                results = list(ddgs.images(query=topic, max_results=10))
+            except TypeError:
+                results = list(ddgs.images(keywords=topic, max_results=10))
+    except Exception as e:
+        print(f"DDGS image search query failed for '{topic}': {e}")
+
+    if not results:
+        web_results = ImageWebSearch.search_images(keywords=topic, limit=1)
+        if web_results and web_results[0].get("image_blob"):
+            with open(save_path, "wb") as f:
+                f.write(web_results[0]["image_blob"])
+            return save_path
+        print(f"No image results found for '{topic}'")
+        return None
+
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+
+    # Try results in order in case the first URL is dead/blocked
+    for result in results:
+        url = result.get("image")
+        if not url:
+            continue
+        try:
+            response = requests.get(url, headers=headers, timeout=timeout)
+            response.raise_for_status()
+            with open(save_path, "wb") as f:
+                f.write(response.content)
+            return save_path
+        except requests.RequestException as e:
+            print(f"Failed to fetch {url}: {e}")
+            continue
+
+    print(f"Could not download any image for '{topic}'")
+    return None
 
 
 if __name__ == "__main__":
