@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { RefreshCw, Save, ArrowRight, ArrowLeft, CheckCircle, Plus, Trash2, Settings, X, Eye, Edit3, Octagon } from 'lucide-react'
-import api from '../utils/api'
+import api, { subjectAPI } from '../utils/api'
 import { showToast } from '../utils/toast'
 import Modal from '../components/Modal'
 
@@ -109,28 +109,38 @@ const QuestionGeneration = () => {
   // Load draft on mount
   useEffect(() => {
     if (subjectId) {
-      const saved = localStorage.getItem(`generation_draft_${subjectId}`)
-      if (saved) {
-        try {
-          const parsed = JSON.parse(saved)
-          if (parsed.unitRange) setUnitRange(parsed.unitRange)
-          if (parsed.parts) setParts(parsed.parts)
-          if (parsed.activeJobId) setActiveJobId(parsed.activeJobId)
-          if (parsed.jobPartIndex !== undefined) setJobPartIndex(parsed.jobPartIndex)
-          if (parsed.isAllPartsJob !== undefined) setIsAllPartsJob(parsed.isAllPartsJob)
-          if (parsed.isRefreshing !== undefined) setIsRefreshing(parsed.isRefreshing)
-          if (parsed.removedTopicIds) setRemovedTopicIds(new Set(parsed.removedTopicIds))
-        } catch (e) {
-          console.error("Error parsing saved draft", e)
+      subjectAPI.getUserDraft(subjectId).then(res => {
+        if (res.data.success) {
+          const savedStr = res.data.draft_data || localStorage.getItem(`generation_draft_${subjectId}`);
+          if (savedStr) {
+            try {
+              const parsed = JSON.parse(savedStr)
+              if (parsed.unitRange) setUnitRange(parsed.unitRange)
+              if (parsed.parts) setParts(parsed.parts)
+              if (res.data.active_job_id) {
+                 setActiveJobId(res.data.active_job_id)
+              } else if (parsed.activeJobId) {
+                 setActiveJobId(parsed.activeJobId)
+              }
+              if (parsed.jobPartIndex !== undefined) setJobPartIndex(parsed.jobPartIndex)
+              if (parsed.isAllPartsJob !== undefined) setIsAllPartsJob(parsed.isAllPartsJob)
+              if (parsed.isRefreshing !== undefined) setIsRefreshing(parsed.isRefreshing)
+              if (parsed.removedTopicIds) setRemovedTopicIds(new Set(parsed.removedTopicIds))
+            } catch (e) {
+              console.error("Error parsing saved draft", e)
+            }
+          }
         }
-      }
+      }).catch(err => {
+        console.error("Error fetching user draft", err)
+      });
     }
   }, [subjectId])
 
   // Save draft on change
   useEffect(() => {
     if (subjectId) {
-      localStorage.setItem(`generation_draft_${subjectId}`, JSON.stringify({
+      const draftObj = {
         unitRange,
         parts,
         activeJobId,
@@ -138,7 +148,14 @@ const QuestionGeneration = () => {
         isAllPartsJob,
         isRefreshing,
         removedTopicIds: Array.from(removedTopicIds)
-      }))
+      };
+      const draftStr = JSON.stringify(draftObj);
+      localStorage.setItem(`generation_draft_${subjectId}`, draftStr)
+      
+      const timer = setTimeout(() => {
+         subjectAPI.saveUserDraft(subjectId, draftStr).catch(e => console.error("Error saving draft to backend", e));
+      }, 1500);
+      return () => clearTimeout(timer);
     }
   }, [subjectId, unitRange, parts, activeJobId, jobPartIndex, isAllPartsJob, isRefreshing, removedTopicIds])
 
@@ -812,7 +829,7 @@ const QuestionGeneration = () => {
               <option value="gemini">Gemini (Online)</option>
             </select>
           </div>
-          <div className="form-group">
+          {/* <div className="form-group">
             <label className="form-label">Questions from Images</label>
             <input
               className="form-input"
@@ -839,10 +856,8 @@ const QuestionGeneration = () => {
                 </label>
               ))}
             </div>
-            {/* <span style={{ fontSize: '0.7rem', color: 'var(--secondary-500)' }}>
-              AI analyzes each image and generates a question about it; the image is embedded in the paper.
-            </span> */}
-          </div>
+          
+          </div> */}
           <div className="form-group" style={{ display: 'flex', alignItems: 'flex-end' }}>
             <button
               type="button"

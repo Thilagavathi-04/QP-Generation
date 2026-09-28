@@ -47,16 +47,16 @@ const Sidebar = () => {
         }
     ]
 
-    // Only show Course Content and Blueprints to Admins
+    // Add Course Content for all authenticated users (Admin and Faculty/Advisor)
+    navGroups.splice(1, 0, {
+        title: 'Course Content',
+        items: [
+            { path: '/subjects', label: 'Subjects', icon: BookOpen },
+            { path: '/question-bank', label: 'Question Bank', icon: Database },
+        ]
+    });
+
     if (isAdmin) {
-        // Add Course Content for admins only
-        navGroups.splice(1, 0, {
-            title: 'Course Content',
-            items: [
-                { path: '/subjects', label: 'Subjects', icon: BookOpen },
-                { path: '/question-bank', label: 'Question Bank', icon: Database },
-            ]
-        });
 
         // Find Assessment group and add Blueprints
         const assessmentGroup = navGroups.find(g => g.title === 'Assessment');

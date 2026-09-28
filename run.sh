@@ -1,28 +1,43 @@
 #!/bin/bash
 
-# Quest Generator - Run Script
-# This script starts all services: Backend, Frontend, and Ollama
+# Quest Generator - Production Run Script
+# Builds frontend for production and starts all services (no dev features).
 
-set -e  # Exit on any error
+set -e
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKEND_DIR="$ROOT_DIR/backend"
 FRONTEND_DIR="$ROOT_DIR/frontend"
 LOG_DIR="$ROOT_DIR/logs"
+PID_DIR="$ROOT_DIR/.pids"
+
+# ---------------------------------------------
+# Production configuration (override via env)
+# ---------------------------------------------
+BACKEND_HOST="${BACKEND_HOST:-0.0.0.0}"
+BACKEND_PORT="${BACKEND_PORT:-8010}"
+BACKEND_WORKERS="${BACKEND_WORKERS:-4}"
+FRONTEND_PORT="${FRONTEND_PORT:-4173}"
+
+# Force rebuild with: ./run_prod.sh --build
+FORCE_BUILD=0
+for arg in "$@"; do
+    case $arg in
+        --build) FORCE_BUILD=1 ;;
+    esac
+done
 
 echo "=========================================="
-echo "Quest Generator - Starting Services"
+echo "Quest Generator - Starting (PRODUCTION)"
 echo "=========================================="
 echo ""
 
-# Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-# Function to print colored messages
 print_success() {
     echo -e "${GREEN}✓ $1${NC}"
 }
@@ -39,116 +54,118 @@ print_service() {
     echo -e "${BLUE}▶ $1${NC}"
 }
 
-# Function to cleanup on exit
-cleanup() {
-    echo ""
-    print_info "Stopping all services..."
-    
-    # Kill all background jobs
-    jobs -p | xargs -r kill 2>/dev/null
-    
-    # Kill specific processes
-    pkill -f "uvicorn main:app" 2>/dev/null || true
-    pkill -f "vite" 2>/dev/null || true
-    pkill -f "ollama serve" 2>/dev/null || true
-    
-    print_success "All services stopped"
-    exit 0
-}
-
-# Set trap to cleanup on script exit
-trap cleanup EXIT INT TERM
-
-# Check if setup has been run
+# Check setup
 if [ ! -d "$BACKEND_DIR/.venv" ] || [ ! -d "$FRONTEND_DIR/node_modules" ]; then
     print_error "Project not set up. Please run ./setup.sh first"
     exit 1
 fi
 
-# # Check if sqlite3 is running
-# if ! systemctl is-active --quiet sqlite3 2>/dev/null; then
-#     print_info "Starting sqlite3 service..."
-#     sudo systemctl start sqlite3
-#     print_success "sqlite3 started"
-# else
-#     print_success "sqlite3 is already running"
-# fi
-
-# Create log directory
 mkdir -p "$LOG_DIR"
+mkdir -p "$PID_DIR"
 
-# 1. Start Ollama in background
+# -----------------------------
+# Ollama
+# -----------------------------
 print_service "Starting Ollama service..."
-ollama serve > "$LOG_DIR/ollama.log" 2>&1 &
-OLLAMA_PID=$!
-sleep 3
 
-if ps -p $OLLAMA_PID > /dev/null; then
-    print_success "Ollama started (PID: $OLLAMA_PID)"
+if pgrep -f "ollama serve" > /dev/null; then
+    print_success "Ollama is already running"
 else
-    print_info "Ollama may already be running or started by system"
+    nohup ollama serve > "$LOG_DIR/ollama.log" 2>&1 &
+    OLLAMA_PID=$!
+    echo "$OLLAMA_PID" > "$PID_DIR/ollama.pid"
+    print_success "Ollama started (PID: $OLLAMA_PID)"
 fi
 
-# 2. Start Backend in background
-print_service "Starting Backend (FastAPI)..."
+# -----------------------------
+# Frontend Build (production)
+# -----------------------------
+print_service "Building Frontend for production..."
+
+if [ "$FORCE_BUILD" -eq 1 ] || [ ! -d "$FRONTEND_DIR/dist" ]; then
+    cd "$FRONTEND_DIR"
+    NODE_ENV=production npm run build > "$LOG_DIR/build.log" 2>&1
+    cd "$ROOT_DIR"
+    print_success "Frontend built successfully"
+else
+    print_info "Using existing build (run './run_prod.sh --build' to rebuild)"
+fi
+
+# -----------------------------
+# Backend
+# -----------------------------
+print_service "Starting Backend (FastAPI - production)..."
 
 cd "$BACKEND_DIR"
-uv run uvicorn main:app --reload --port 8010 > "$LOG_DIR/backend.log" 2>&1 &
+
+nohup uv run uvicorn main:app \
+    --host "$BACKEND_HOST" \
+    --port "$BACKEND_PORT" \
+    --workers "$BACKEND_WORKERS" \
+    > "$LOG_DIR/backend.log" 2>&1 &
+
 BACKEND_PID=$!
+echo "$BACKEND_PID" > "$PID_DIR/backend.pid"
+
 cd "$ROOT_DIR"
 
 sleep 3
 
-if ps -p $BACKEND_PID > /dev/null; then
-    print_success "Backend started (PID: $BACKEND_PID) - http://127.0.0.1:8010"
+if ps -p "$BACKEND_PID" > /dev/null; then
+    print_success "Backend started (PID: $BACKEND_PID, workers: $BACKEND_WORKERS)"
 else
     print_error "Backend failed to start. Check logs/backend.log"
-    pwd
     exit 1
 fi
 
-# 3. Start Frontend in background
-print_service "Starting Frontend (Vite)..."
-cd "$FRONTEND_DIR"
-npm run dev > "$LOG_DIR/frontend.log" 2>&1 &
-FRONTEND_PID=$!
-cd "$ROOT_DIR"
-sleep 5
+# -----------------------------
+# Frontend Serve (production)
+# -----------------------------
+print_service "Serving Frontend (production build)..."
 
-if ps -p $FRONTEND_PID > /dev/null; then
+cd "$FRONTEND_DIR"
+
+nohup npx vite preview \
+    --host 0.0.0.0 \
+    --port "$FRONTEND_PORT" \
+    --strictPort \
+    > "$LOG_DIR/frontend.log" 2>&1 &
+
+FRONTEND_PID=$!
+echo "$FRONTEND_PID" > "$PID_DIR/frontend.pid"
+
+cd "$ROOT_DIR"
+
+sleep 3
+
+if ps -p "$FRONTEND_PID" > /dev/null; then
     print_success "Frontend started (PID: $FRONTEND_PID)"
 else
     print_error "Frontend failed to start. Check logs/frontend.log"
     exit 1
 fi
 
-# Extract frontend URL from log
-sleep 2
-FRONTEND_URL=$(grep -oP 'Local:\s+\Khttp://[^\s]+' logs/frontend.log | tail -1)
-
 echo ""
 echo "=========================================="
-print_success "All services started successfully!"
+print_success "All services started (PRODUCTION MODE)!"
 echo "=========================================="
 echo ""
 echo "Service URLs:"
-echo "  Frontend:  ${FRONTEND_URL:-http://localhost:5173}"
-echo "  Backend:   http://127.0.0.1:8010"
-echo "  API Docs:  http://127.0.0.1:8010/docs"
+echo "  Frontend:  http://localhost:$FRONTEND_PORT"
+echo "  Backend:   http://$BACKEND_HOST:$BACKEND_PORT"
+echo "  API Docs:  http://localhost:$BACKEND_PORT/docs"
 echo "  Ollama:    http://localhost:11434"
 echo ""
 echo "Logs:"
 echo "  Backend:   logs/backend.log"
 echo "  Frontend:  logs/frontend.log"
+echo "  Build:     logs/build.log"
 echo "  Ollama:    logs/ollama.log"
 echo ""
-print_info "Press Ctrl+C to stop all services"
+echo "PIDs:"
+echo "  Backend:   $BACKEND_PID"
+echo "  Frontend:  $FRONTEND_PID"
+echo "  Ollama:    ${OLLAMA_PID:-already running}"
 echo ""
-
-# Keep script running and show logs
-tail -f logs/backend.log logs/frontend.log logs/ollama.log 2>/dev/null || {
-    # If tail fails, just wait
-    while true; do
-        sleep 1
-    done
-}
+print_info "Production services running in background."
+print_info "Use ./stop.sh to stop them."

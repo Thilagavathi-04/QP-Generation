@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Script to create admin and advisor users in the database.
+Script to create admin, advisor, and department HOD users in the database.
 Ensures all required columns exist in the users table first.
 """
 
@@ -17,6 +17,20 @@ load_dotenv(BASE_DIR / ".env")
 
 # Import database functions
 from core.database import get_db_connection, get_db_type, get_cursor, get_placeholder
+
+# ============================================================
+# Department HOD configuration
+# ============================================================
+DEPARTMENTS = [
+    "AIML", "AIDS", "IT", "CSE", "CYBER", "BME", "EEE",
+    "ECE", "MECH", "FT", "BT", "AGRI", "CIVIL", "VLSI"
+]
+
+HOD_EMAIL_DOMAIN = "qpgen.ac.in"
+HOD_PASSWORD_TEMPLATE = "{dept}_PASS@SIET!2727"
+HOD_ROLE = "advisor"            # change to "user" or "hod" if your app uses a different role
+FORCE_PASSWORD_CHANGE = False   # set True to force HODs to change password on first login
+
 
 def _hash_password(password: str) -> str:
     """SHA-256 hash of password"""
@@ -44,11 +58,7 @@ def ensure_user_columns():
         
         for col_name, col_type, col_default in columns_to_add:
             try:
-                if db_type == 'sqlite':
-                    alter_sql = f"ALTER TABLE users ADD COLUMN {col_name} {col_type} {col_default}"
-                else:
-                    alter_sql = f"ALTER TABLE users ADD COLUMN {col_name} {col_type} {col_default}"
-                
+                alter_sql = f"ALTER TABLE users ADD COLUMN {col_name} {col_type} {col_default}"
                 cursor.execute(alter_sql)
                 print(f"✓ Added column '{col_name}' to users table")
             except Exception as e:
@@ -68,7 +78,8 @@ def ensure_user_columns():
             connection.close()
         return False
 
-def create_user(email: str, name: str, password: str, role: str, department: str = None):
+def create_user(email: str, name: str, password: str, role: str, department: str = None,
+                must_change: int = None):
     """Create a new user with the specified details"""
     connection = get_db_connection()
     if not connection:
@@ -90,7 +101,8 @@ def create_user(email: str, name: str, password: str, role: str, department: str
         
         # Hash password
         pw_hash = _hash_password(password)
-        must_change = 0 if password != "12345678" else 1
+        if must_change is None:
+            must_change = 0 if password != "12345678" else 1
         
         # Insert user
         cursor.execute(
@@ -111,9 +123,28 @@ def create_user(email: str, name: str, password: str, role: str, department: str
             connection.close()
         return False
 
+def create_department_hods():
+    """Create a HOD account for every department"""
+    results = []
+    for dept in DEPARTMENTS:
+        email = f"{dept.lower()}_hod@{HOD_EMAIL_DOMAIN}"
+        password = HOD_PASSWORD_TEMPLATE.format(dept=dept)
+        name = f"{dept} Department HOD"
+
+        success = create_user(
+            email=email,
+            name=name,
+            password=password,
+            role=HOD_ROLE,
+            department=dept,
+            must_change=1 if FORCE_PASSWORD_CHANGE else None,
+        )
+        results.append((dept, email, password, success))
+    return results
+
 def main():
     print("=" * 60)
-    print("QP-Generation: Create Admin and Advisor Users")
+    print("QP-Generation: Create Admin, Advisor & Department Users")
     print("=" * 60)
     
     # Step 1: Ensure columns exist
@@ -127,7 +158,7 @@ def main():
     admin_created = create_user(
         email="admin@qpgen.local",
         name="System Administrator",
-        password="admin@123",  # Change this to a secure password
+        password="admin@123",
         role="admin",
         department="Administration"
     )
@@ -137,25 +168,40 @@ def main():
     advisor_created = create_user(
         email="advisor@qpgen.local",
         name="Academic Advisor",
-        password="advisor@123",  # Change this to a secure password
+        password="advisor@123",
         role="advisor",
         department="Academic Affairs"
     )
     
+    # Step 4: Create department HOD users
+    print(f"\n👥 Step 4: Creating {len(DEPARTMENTS)} department HOD users...")
+    hod_results = create_department_hods()
+    
     # Summary
     print("\n" + "=" * 60)
-    if admin_created and advisor_created:
-        print("✓ Successfully created all users!")
-        print("\nLogin Credentials:")
-        print("Admin User:")
-        print("  Email: admin@qpgen.local")
+    print("✓ Login Credentials")
+    print("=" * 60)
+
+    if admin_created:
+        print("\nAdmin User:")
+        print("  Email:    admin@qpgen.local")
         print("  Password: admin@123")
+
+    if advisor_created:
         print("\nAdvisor User:")
-        print("  Email: advisor@qpgen.local")
+        print("  Email:    advisor@qpgen.local")
         print("  Password: advisor@123")
-        print("\n⚠️  IMPORTANT: Change these passwords immediately in production!")
-    else:
-        print("⚠️  Some users may not have been created successfully")
+
+    print(f"\nDepartment HOD Users (role: {HOD_ROLE}):")
+    print("-" * 70)
+    print(f"{'Dept':<8} {'Email':<30} Password")
+    print("-" * 70)
+    for dept, email, password, success in hod_results:
+        status = "" if success else "  ⚠️ FAILED"
+        print(f"{dept:<8} {email:<30} {password}{status}")
+
+    print("-" * 70)
+    print("\n⚠️  IMPORTANT: Change these passwords immediately in production!")
     print("=" * 60)
 
 if __name__ == "__main__":
