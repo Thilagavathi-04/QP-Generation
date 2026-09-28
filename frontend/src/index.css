@@ -48,7 +48,18 @@
   --accent-500: #3b82f6;
   --accent-600: #2563eb;
 
-  --sidebar-bg: linear-gradient(180deg, #4b5563 0%, #374151 50%, #1f2937 100%);
+  /* Shell tokens — the exam-paper spine */
+  --ink: #0f172a;
+  --paper: #f3f5f9;
+  --rule: #e2e8f0;
+  --ballpoint: #1d4ed8;
+  --marker: #c81e3b;
+  --seal: #15803d;
+  --card-bg: #ffffff;
+  --focus-ring: #2563eb;
+  --sidebar-width: 264px;
+  --topbar-height: 56px;
+
   --card-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
   --card-shadow-hover: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
 }
@@ -69,6 +80,45 @@ body {
 
 #root {
   min-height: 100vh;
+}
+
+/* Keyboard focus must always be visible */
+:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.sidebar :focus-visible {
+  outline-color: #ffffff;
+}
+
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  z-index: 1200;
+  background: var(--ink);
+  color: #ffffff;
+  padding: 0.75rem 1.25rem;
+  font-weight: 600;
+  text-decoration: none;
+  border-radius: 0 0 8px 0;
+}
+
+.skip-link:focus {
+  left: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 h1 {

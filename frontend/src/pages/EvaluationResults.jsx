@@ -33,7 +33,7 @@ const EvaluationResults = () => {
 
     if (!report || report.total_students === 0) {
         return (
-            <div style={{ padding: '2rem', textAlign: 'center' }}>
+            <div style={{ textAlign: 'center' }}>
                 <Users size={64} style={{ color: 'var(--primary-200)', marginBottom: '1rem' }} />
                 <h2>No evaluations found</h2>
                 <p>No students have been evaluated for this paper yet.</p>
@@ -43,7 +43,7 @@ const EvaluationResults = () => {
     }
 
     return (
-        <div style={{ padding: '2rem', maxWidth: '1400px', margin: '0 auto' }}>
+        <div style={{ maxWidth: '1400px', margin: '0 auto' }}>
             <div style={{ marginBottom: '2rem', display: 'flex', alignItems: 'center', gap: '1rem' }}>
                 <Link to="/grading-dashboard" style={{ color: 'var(--primary-600)', display: 'flex', alignItems: 'center' }}>
                     <ChevronLeft size={24} /> Back

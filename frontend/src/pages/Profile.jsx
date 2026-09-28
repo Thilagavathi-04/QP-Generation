@@ -56,7 +56,7 @@ export default function Profile() {
   const displayRole = (normalizedRole || (isAdmin ? 'admin' : 'user')).toUpperCase();
 
   return (
-    <div className="fade-in" style={{ padding: '2rem', maxWidth: '1000px', margin: '0 auto' }}>
+    <div className="fade-in" style={{ maxWidth: '1000px', margin: '0 auto' }}>
       <div style={{
         background: 'var(--gradient-banner)',
         padding: '3rem 2rem',

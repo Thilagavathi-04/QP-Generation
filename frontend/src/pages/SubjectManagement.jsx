@@ -156,11 +156,7 @@ const SubjectManagement = () => {
   }
 
   return (
-    <div style={{
-      width: '100%',
-      padding: '2rem',
-      minHeight: '100vh'
-    }}>
+    <div style={{ width: '100%' }}>
       <div style={{
         background: 'var(--gradient-banner)',
         padding: '2rem',
@@ -470,7 +466,7 @@ const SubjectManagement = () => {
                     gap: '0.5rem',
                     marginBottom: '0.5rem',
                     padding: '0.5rem',
-                    background: 'var(--rose-50)',
+                    background: 'var(--blue-50)',
                     borderRadius: '8px'
                   }}>
                     <FileText size={16} style={{ color: 'var(--primary-400)' }} />
@@ -487,7 +483,7 @@ const SubjectManagement = () => {
                     gap: '0.5rem',
                     marginBottom: '0.5rem',
                     padding: '0.5rem',
-                    background: 'var(--rose-50)',
+                    background: 'var(--blue-50)',
                     borderRadius: '8px'
                   }}>
                     <BookOpen size={16} style={{ color: 'var(--primary-400)' }} />
@@ -516,7 +512,7 @@ const SubjectManagement = () => {
                     gap: '0.5rem',
                     marginBottom: '0.5rem',
                     padding: '0.5rem',
-                    background: 'var(--rose-50)',
+                    background: 'var(--blue-50)',
                     borderRadius: '8px'
                   }}>
                     <FileText size={16} style={{ color: 'var(--primary-400)' }} />
@@ -605,7 +601,7 @@ const SubjectManagement = () => {
                     style={{
                       fontSize: '0.875rem',
                       padding: '0.5rem 0.75rem',
-                      background: uploadingCourseOutcomeFor === subject.id ? '#94a3b8' : 'var(--gradient-mint-fresh)',
+                      background: uploadingCourseOutcomeFor === subject.id ? '#94a3b8' : 'var(--success-600)',
                       color: 'white',
                       cursor: uploadingCourseOutcomeFor === subject.id ? 'not-allowed' : 'pointer',
                       opacity: uploadingCourseOutcomeFor === subject.id ? 0.8 : 1,

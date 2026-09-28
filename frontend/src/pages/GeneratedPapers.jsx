@@ -163,10 +163,7 @@ const GeneratedPapers = () => {
   }
 
   return (
-    <div style={{
-      padding: '2rem',
-      width: '100%'
-    }}>
+    <div style={{ width: '100%' }}>
       {/* Header */}
       <div style={{
         background: 'var(--gradient-banner)',
@@ -364,7 +361,7 @@ const GeneratedPapers = () => {
                         fontSize: '0.75rem',
                         fontWeight: '600',
                         borderRadius: '9999px',
-                        backgroundColor: 'var(--rose-100)',
+                        backgroundColor: 'var(--blue-100)',
                         color: 'var(--primary-800)',
                         display: 'inline-block'
                       }}>

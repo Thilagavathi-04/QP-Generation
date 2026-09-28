@@ -1,7 +1,6 @@
 import React from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
-    Circle,
     ChevronRight,
     ChevronLeft,
     ArrowRight
@@ -12,7 +11,7 @@ const allSteps = [
     { id: 'subjects', label: 'Subjects', path: '/subjects' },
     { id: 'questions', label: 'Questions', path: '/question-bank' },
     { id: 'blueprints', label: 'Blueprints', path: '/blueprints' },
-    { id: 'papers', label: 'Generate Paper', path: '/generate-paper' },
+    { id: 'papers', label: 'Generate paper', path: '/generate-paper' },
     { id: 'grading', label: 'Grading', path: '/grading-dashboard' }
 ];
 
@@ -52,58 +51,50 @@ const WorkflowHeader = () => {
     };
 
     return (
-        <div className="workflow-container" style={{ marginBottom: '2rem' }}>
-            <div className="workflow-nav">
+        <div className="workflow-container">
+            <nav className="workflow-nav" aria-label="Workflow steps">
                 {steps.map((step, index) => (
                     <React.Fragment key={step.id}>
-                        <div
+                        <button
+                            type="button"
                             className={`workflow-step ${index === currentIndex ? 'active' : ''} ${index < currentIndex ? 'completed' : ''}`}
                             onClick={() => navigate(step.path)}
-                            style={{ cursor: 'pointer' }}
+                            aria-current={index === currentIndex ? 'step' : undefined}
                         >
-                            <div className="workflow-dot-container">
-                                <div className={`workflow-dot ${index === currentIndex ? 'active' : ''} ${index < currentIndex ? 'completed' : ''}`} />
-                            </div>
-                            <span>{step.label}</span>
-                        </div>
-                        {index < steps.length - 1 && (
-                            <ChevronRight size={14} className="workflow-separator" style={{ color: '#cbd5e1' }} />
+                            <span className="workflow-dot-container" aria-hidden="true">
+                                <span className={`workflow-dot ${index === currentIndex ? 'active' : ''}`} />
+                            </span>
+                            <span className="workflow-step-text">{step.label}</span>
+                        </button>                        {index < steps.length - 1 && (
+                            <ChevronRight size={14} className="workflow-separator" aria-hidden="true" />
                         )}
                     </React.Fragment>
                 ))}
-            </div>
+            </nav>
 
-            <div className="workflow-actions" style={{
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                background: 'white',
-                padding: '1rem 1.5rem',
-                borderRadius: '12px',
-                boxShadow: '0 1px 3px rgba(0,0,0,0.1)'
-            }}>
+            <div className="workflow-actions">
                 <button
+                    type="button"
                     onClick={handleBack}
                     disabled={currentIndex === 0}
                     className="btn btn-outline"
-                    style={{ padding: '0.5rem 1rem', fontSize: '0.85rem' }}
                 >
-                    <ChevronLeft size={16} />
+                    <ChevronLeft size={16} aria-hidden="true" />
                     Back
                 </button>
 
-                <div style={{ fontWeight: '600', color: '#1e293b', fontSize: '0.9rem' }}>
-                    Step {currentIndex + 1}: {steps[currentIndex].label}
-                </div>
+                <span className="workflow-progress">
+                    Step {currentIndex + 1} of {steps.length}: {steps[currentIndex].label}
+                </span>
 
                 <button
+                    type="button"
                     onClick={handleNext}
                     disabled={currentIndex === steps.length - 1}
                     className="btn btn-primary"
-                    style={{ padding: '0.5rem 1rem', fontSize: '0.85rem' }}
                 >
                     Next
-                    <ArrowRight size={16} />
+                    <ArrowRight size={16} aria-hidden="true" />
                 </button>
             </div>
         </div>

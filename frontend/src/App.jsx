@@ -1,9 +1,10 @@
-import React, { Suspense, lazy } from 'react'
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom'
+import React, { Suspense, lazy, useState, useEffect, useRef } from 'react'
+import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { AuthProvider } from './context/AuthContext'
 import { useAuth } from './context/useAuth'
 import Sidebar from './components/Navbar'
+import Topbar from './components/Topbar'
 import WorkflowHeader from './components/WorkflowHeader'
 import ToastContainer from './components/Toast'
 import './App.css'
@@ -21,23 +22,67 @@ const GradingDashboard = lazy(() => import('./pages/GradingDashboard'))
 const EvaluationResults = lazy(() => import('./pages/EvaluationResults'))
 const Login = lazy(() => import('./pages/login'))
 const Profile = lazy(() => import('./pages/Profile'))
+const About = lazy(() => import('./pages/About'))
 
 const queryClient = new QueryClient()
+
+// The app shell: sidebar spine, topbar and page frame.
+const Shell = ({ children }) => {
+  // The drawer is keyed to the route it was opened on, so navigating away
+  // closes it without an effect having to sync state.
+  const [openedFor, setOpenedFor] = useState(null)
+  const location = useLocation()
+  const navOpen = openedFor === location.pathname
+  const wasOpen = useRef(false)
+
+  useEffect(() => {
+    if (navOpen) {
+      wasOpen.current = true
+      document.body.style.overflow = 'hidden'
+      document.getElementById('nav-close')?.focus()
+      const onKey = (event) => {
+        if (event.key === 'Escape') setOpenedFor(null)
+      }
+      window.addEventListener('keydown', onKey)
+      return () => {
+        window.removeEventListener('keydown', onKey)
+        document.body.style.overflow = ''
+      }
+    }
+    document.body.style.overflow = ''
+    if (wasOpen.current) {
+      wasOpen.current = false
+      document.getElementById('nav-toggle')?.focus()
+    }
+  }, [navOpen])
+
+  return (
+    <div className="app">
+      <a href="#main-content" className="skip-link">Skip to main content</a>
+      <Sidebar
+        open={navOpen}
+        onClose={() => setOpenedFor(null)}
+      />
+      <div className="main-col">
+        <Topbar
+          open={navOpen}
+          onToggle={() => setOpenedFor(navOpen ? null : location.pathname)}
+        />
+        <main id="main-content" className="main-content" tabIndex={-1}>
+          <WorkflowHeader />
+          {children}
+        </main>
+      </div>
+      <ToastContainer />
+    </div>
+  )
+}
 
 // Restrict to Only Authenticated Users
 const PrivateRoute = ({ children }) => {
   const { currentUser } = useAuth();
   if (!currentUser) return <Navigate to="/login" replace />;
-  return (
-    <div className="app">
-      <Sidebar />
-      <main className="main-content">
-        <WorkflowHeader />
-        {children}
-      </main>
-      <ToastContainer />
-    </div>
-  );
+  return <Shell>{children}</Shell>;
 };
 
 // Restrict to Only Admins
@@ -70,7 +115,7 @@ function App() {
                   <ToastContainer />
                 </>
               } />
-              
+
               {/* Protected General/Faculty Routes */}
               <Route path="/" element={<PrivateRoute><Dashboard /></PrivateRoute>} />
               <Route path="/subjects" element={<PrivateRoute><SubjectManagement /></PrivateRoute>} />
@@ -82,13 +127,14 @@ function App() {
               <Route path="/grading-dashboard" element={<PrivateRoute><GradingDashboard /></PrivateRoute>} />
               <Route path="/evaluation-results/:paperId" element={<PrivateRoute><EvaluationResults /></PrivateRoute>} />
               <Route path="/profile" element={<PrivateRoute><Profile /></PrivateRoute>} />
+              <Route path="/about" element={<PrivateRoute><About /></PrivateRoute>} />
 
               {/* Admin Only Routes */}
               <Route path="/blueprints" element={<PrivateRoute><AdminRoute><BlueprintManagement /></AdminRoute></PrivateRoute>} />
               {/* Admin + HOD Routes (user management) */}
               <Route path="/admin" element={<PrivateRoute><RoleRoute roles={['admin', 'hod']}><AdminDashboard /></RoleRoute></PrivateRoute>} />
               <Route path="/add-profile" element={<PrivateRoute><RoleRoute roles={['admin', 'hod']}><AdminProfile /></RoleRoute></PrivateRoute>} />
-              
+
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
           </Suspense>

@@ -279,11 +279,7 @@ const BlueprintManagement = () => {
   }
 
   return (
-    <div style={{
-      width: '100%',
-      padding: '2rem',
-      minHeight: '100vh'
-    }}>
+    <div style={{ width: '100%' }}>
       <div style={{
         background: 'var(--gradient-banner)',
         padding: '2rem',
@@ -515,7 +511,7 @@ const BlueprintManagement = () => {
               {/* Total Summary */}
               <div style={{
                 padding: '1rem',
-                backgroundColor: 'var(--rose-50)',
+                backgroundColor: 'var(--blue-50)',
                 borderRadius: '8px',
                 border: '1px solid var(--primary-200)'
               }}>
@@ -609,7 +605,7 @@ const BlueprintManagement = () => {
                 gap: '0.5rem',
                 marginBottom: '1rem',
                 padding: '0.75rem',
-                backgroundColor: 'var(--rose-100)',
+                backgroundColor: 'var(--blue-100)',
                 borderRadius: '6px',
                 fontSize: '0.875rem'
               }}>

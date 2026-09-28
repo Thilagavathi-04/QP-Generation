@@ -10,13 +10,14 @@ import {
     LogOut,
     Shield,
     ClipboardList,
-    ChevronRight,
     UserCircle,
-    Settings
+    Settings,
+    Info,
+    X
 } from 'lucide-react'
 import { useAuth } from '../context/useAuth'
 
-const Sidebar = () => {
+const Sidebar = ({ open, onClose }) => {
     const location = useLocation()
     const { userData, logout, isAdmin, isHod } = useAuth()
     const role = userData?.role === 'advisor' ? 'staff' : userData?.role
@@ -28,16 +29,23 @@ const Sidebar = () => {
 
     const navGroups = [
         {
-            title: 'dashboard',
+            title: 'Overview',
             items: [
                 { path: '/', label: 'Dashboard', icon: Home },
             ]
         },
         {
+            title: 'Course content',
+            items: [
+                { path: '/subjects', label: 'Subjects', icon: BookOpen },
+                { path: '/question-bank', label: 'Question bank', icon: Database },
+            ]
+        },
+        {
             title: 'Assessment',
             items: [
-                { path: '/generate-paper', label: 'Question paper generation', icon: FileOutput },
-                { path: '/generated-papers', label: 'All Question papers', icon: Archive },
+                { path: '/generate-paper', label: 'Generate paper', icon: FileOutput },
+                { path: '/generated-papers', label: 'All papers', icon: Archive },
             ]
         },
         {
@@ -48,20 +56,11 @@ const Sidebar = () => {
         }
     ]
 
-    // Course Content: visible to every role (data is scoped per role on the backend)
-    navGroups.splice(1, 0, {
-        title: 'Course Content',
-        items: [
-            { path: '/subjects', label: 'Subjects', icon: BookOpen },
-            { path: '/question-bank', label: 'Question Bank', icon: Database },
-        ]
-    });
-
     // Blueprints: admin only
     if (isAdmin) {
-        const assessmentGroup = navGroups.find(g => g.title === 'Assessment');
+        const assessmentGroup = navGroups.find(g => g.title === 'Assessment')
         if (assessmentGroup) {
-            assessmentGroup.items.unshift({ path: '/blueprints', label: 'Blueprints', icon: Layout });
+            assessmentGroup.items.unshift({ path: '/blueprints', label: 'Blueprints', icon: Layout })
         }
     }
 
@@ -70,22 +69,28 @@ const Sidebar = () => {
         navGroups.push({
             title: 'System',
             items: [
-                { path: '/admin', label: 'Admin Dashboard', icon: Shield },
-                { path: '/add-profile', label: isAdmin ? 'Manage Faculty' : 'Add Staff', icon: Settings }
+                { path: '/admin', label: 'Admin dashboard', icon: Shield },
+                { path: '/add-profile', label: isAdmin ? 'Manage faculty' : 'Add staff', icon: Settings }
             ]
-        });
+        })
     }
+
+    navGroups.push({
+        title: 'Account',
+        items: [{ path: '/profile', label: 'My profile', icon: UserCircle }]
+    })
+
+    navGroups.push({
+        title: 'About',
+        items: [{ path: '/about', label: 'About this app', icon: Info }]
+    })
 
     const roleLabel =
         role === 'admin' ? 'Administrator' :
         role === 'hod' ? 'Head of Department' :
         'Faculty';
 
-    // Add Profile to everyone
-    navGroups.push({
-        title: 'Account',
-        items: [{ path: '/profile', label: 'My Profile', icon: UserCircle }]
-    });
+    const userName = userData?.name || userData?.Name || 'User'
 
     const handleLogout = async () => {
         try {
@@ -97,85 +102,70 @@ const Sidebar = () => {
     }
 
     return (
-        <aside className="sidebar">
-            <div className="sidebar-header">
-                <Link to="/" className="sidebar-logo">
-                    <img
-                        src="/logo.png"
-                        alt="AI Avalon Logo"
-                        style={{
-                            height: '32px',
-                            width: '32px',
-                            borderRadius: '8px',
-                            objectFit: 'contain',
-                            marginRight: '0.75rem',
-                            backgroundColor: 'transparent'
-                        }}
-                    />
-                    <span>Quest Generator</span>
-                </Link>
-            </div>
-
-            <div className="sidebar-nav">
-                {navGroups.map((group, groupIdx) => (
-                    <div key={groupIdx} className="sidebar-group">
-                        <h3 className="sidebar-group-title">{group.title}</h3>
-                        {group.items.map((item) => {
-                            const NavIcon = item.icon
-                            return <Link
-                                key={item.path}
-                                to={item.path}
-                                className={`sidebar-link ${isActive(item.path) ? 'active' : ''}`}
-                            >
-                                <NavIcon size={18} />
-                                <span>{item.label}</span>
-                                {isActive(item.path) && <ChevronRight size={14} className="active-indicator" />}
-                            </Link>
-                        })}
-                    </div>
-                ))}
-            </div>
-
-            <div className="sidebar-footer">
-                <div style={{ padding: '0 1.5rem 1rem' }}>
-                    <div style={{ 
-                        padding: '1rem', 
-                        background: 'rgba(255,255,255,0.05)', 
-                        borderRadius: '12px',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '0.75rem',
-                        marginBottom: '1rem'
-                    }}>
-                        <div style={{ 
-                            width: '32px', 
-                            height: '32px', 
-                            borderRadius: '50%', 
-                            background: 'var(--primary-500)',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            fontWeight: 'bold',
-                            color: 'white'
-                        }}>
-                            {userData?.name?.charAt(0) || userData?.Name?.charAt(0) || 'U'}
-                        </div>
-                        <div style={{ overflow: 'hidden' }}>
-                            <p style={{ margin: 0, fontSize: '0.875rem', fontWeight: '600', color: 'white', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{userData?.name || userData?.Name || 'User'}</p>
-                            <p style={{ margin: 0, fontSize: '0.75rem', color: 'rgba(255,255,255,0.5)' }}>{roleLabel}</p>
-                        </div>
-                    </div>
+        <>
+            <div
+                className={`sidebar-scrim${open ? ' show' : ''}`}
+                onClick={onClose}
+                aria-hidden="true"
+            />
+            <aside id="sidebar" className={`sidebar${open ? ' open' : ''}`}>
+                <div className="sidebar-header">
+                    <Link to="/" className="sidebar-logo" onClick={onClose}>
+                        <img src="/logo.png" alt="" className="sidebar-logo-img" />
+                        <span>QP Generator</span>
+                    </Link>
+                    <button
+                        id="nav-close"
+                        type="button"
+                        className="sidebar-close"
+                        onClick={onClose}
+                        aria-label="Close navigation"
+                    >
+                        <X size={18} />
+                    </button>
                 </div>
-                <button
-                    onClick={handleLogout}
-                    className="logout-btn"
-                    style={{ width: 'calc(100% - 3rem)', margin: '0 1.5rem 1.5rem' }}
-                >
-                    <LogOut size={18} />
-                    <span>Sign Out</span>
-                </button>
-            </div>
-        </aside>
+
+                <nav className="sidebar-nav" aria-label="Main navigation">
+                    {navGroups.map((group, groupIdx) => (
+                        <div key={group.title + groupIdx} className="sidebar-group">
+                            <h2 className="sidebar-group-title">{group.title}</h2>
+                            {group.items.map((item) => {
+                                const NavIcon = item.icon
+                                const active = isActive(item.path)
+                                return (
+                                    <Link
+                                        key={item.path}
+                                        to={item.path}
+                                        onClick={onClose}
+                                        aria-current={active ? 'page' : undefined}
+                                        className={`sidebar-link${active ? ' active' : ''}`}
+                                    >
+                                        <NavIcon size={18} aria-hidden="true" />
+                                        <span>{item.label}</span>
+                                    </Link>
+                                )
+                            })}
+                        </div>
+                    ))}
+                </nav>
+
+                <div className="sidebar-footer">
+                    <div className="sidebar-user">
+                        <span className="sidebar-avatar" aria-hidden="true">
+                            {userName.charAt(0).toUpperCase()}
+                        </span>
+                        <span className="sidebar-user-text">
+                            <span className="sidebar-user-name">{userName}</span>
+                            <span className="sidebar-user-role">{roleLabel}</span>
+                        </span>
+                    </div>
+                    <button type="button" onClick={handleLogout} className="logout-btn">
+                        <LogOut size={18} aria-hidden="true" />
+                        <span>Sign out</span>
+                    </button>
+                </div>
+            </aside>
+        </>
     )
 }
 

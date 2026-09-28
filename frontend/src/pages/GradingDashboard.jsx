@@ -273,7 +273,7 @@ const GradingDashboard = () => {
     };
 
     return (
-        <div style={{ padding: '2rem', width: '100%' }}>
+        <div style={{ width: '100%' }}>
             <div style={{
                 background: 'var(--gradient-banner)',
                 padding: '2.5rem',

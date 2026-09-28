@@ -91,7 +91,7 @@ const AdminDashboard = () => {
 
             <div className="users-table-container">
                 {isLoading ? (
-                    <div className="loading">Loading users...</div>
+                    <div className="admin-loading">Loading users…</div>
                 ) : (
                     <table className="users-table">
                         <thead>

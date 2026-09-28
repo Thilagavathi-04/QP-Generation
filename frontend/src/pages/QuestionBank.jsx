@@ -339,7 +339,7 @@ const QuestionBank = () => {
   // --- BANK LIST VIEW ---
   if (!selectedBank) {
     return (
-      <div style={{ padding: '2rem', maxWidth: '100%' }}>
+      <div style={{ maxWidth: '100%' }}>
         <div style={{ marginBottom: '2rem' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem' }}>
             <div>
@@ -717,7 +717,7 @@ const QuestionBank = () => {
                 style={{
                   padding: '1.5rem',
                   transition: 'all 0.2s ease',
-                  background: isSelected ? 'var(--rose-50)' : 'white',
+                  background: isSelected ? 'var(--blue-50)' : 'white',
                   border: isSelected ? '2px solid var(--primary-400)' : '1px solid var(--secondary-200)',
                   borderRadius: '12px',
                   marginBottom: '1rem',
@@ -795,7 +795,7 @@ const QuestionBank = () => {
                         {question.unit && (
                           <span style={{
                             padding: '0.375rem 0.75rem',
-                            backgroundColor: 'var(--rose-100)',
+                            backgroundColor: 'var(--blue-100)',
                             color: 'var(--primary-800)',
                             borderRadius: '6px',
                             fontWeight: '600'
