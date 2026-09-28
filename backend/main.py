@@ -1,4 +1,5 @@
-from fastapi import FastAPI, HTTPException, status, UploadFile, File, Form, Body, BackgroundTasks, Request
+from fastapi import FastAPI, HTTPException, status, UploadFile, File, Form, Body, BackgroundTasks, Request, Depends
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import uuid
@@ -164,7 +165,31 @@ STUDENT_UPLOADS_DIR = UPLOAD_DIR / "student_submissions"
 for directory in [DATA_DIR, UPLOAD_DIR, SYLLABUS_DIR, BOOK_DIR, COURSE_OUTCOMES_DIR, PAPERS_DIR, BLUEPRINTS_DIR, TEMP_BLUEPRINTS_DIR, STUDENT_UPLOADS_DIR]:
     directory.mkdir(parents=True, exist_ok=True)
 
-app = FastAPI(title="Quest Generator API", version="1.0.0")
+app = FastAPI(
+    title="Quest Generator API",
+    version="1.0.0",
+    description=(
+        "The docs are public; **calling** the endpoints requires an HTTP Bearer token "
+        "except login. Use the **Authorize** button below and paste the JWT returned by "
+        "`POST /api/auth/login` (without the word 'Bearer')."
+    ),
+    openapi_tags=[
+        {"name": "Auth", "description": "Login, current user, password change, user creation."},
+        {"name": "Admin", "description": "User listing and approve/reject actions (admin/HOD)."},
+        {"name": "Subjects", "description": "Subject CRUD, syllabus, units, topics, course outcomes, question generation."},
+        {"name": "Question Banks", "description": "Question bank management per subject."},
+        {"name": "Questions", "description": "Question CRUD, bulk import, parsing and images."},
+        {"name": "Question Images", "description": "Upload and retrieval of question images."},
+        {"name": "Question Papers", "description": "Generate, save, list, download and delete question papers."},
+        {"name": "Blueprints", "description": "Exam blueprint templates (mutations are admin-only)."},
+        {"name": "Search", "description": "Scoped search across subjects, questions and papers."},
+        {"name": "Jobs", "description": "Background generation job status (owner/admin only)."},
+        {"name": "Dashboard", "description": "Stats and recent activity, scoped to the caller."},
+        {"name": "Answer Scripts", "description": "Generate/fetch/update answer scripts per paper."},
+        {"name": "Evaluations", "description": "Evaluate scripts and fetch results/reports."},
+        {"name": "System", "description": "Service root/health."},
+    ],
+)
 
 # CORS middleware "*", 
 app.add_middleware(
@@ -212,7 +237,7 @@ def _decode_token(token: str) -> dict:
 
 VALID_ROLES = ("admin", "hod", "staff")
 ROLE_ALIASES = {"advisor": "staff", "teacher": "staff"}
-PUBLIC_API_PATHS = {"/api/auth/login", "/api/auth/me"}
+PUBLIC_API_PATHS = {"/api/auth/login", "/api/auth/me", "/"}  # "/" = health banner only
 
 
 def _normalize_role(role: str) -> str:
@@ -263,7 +288,8 @@ def _fetch_auth_user(user_id: int) -> Optional[dict]:
 
 @app.middleware("http")
 async def rbac_auth_middleware(request: Request, call_next):
-    """Require a valid JWT on every /api/* route (except public auth routes)."""
+    """Require a valid JWT on every /api/* route (except public auth routes).
+    The API docs (/docs, /redoc, /openapi.json) stay public."""
     path = request.url.path
     if request.method == "OPTIONS" or not path.startswith("/api/") or path in PUBLIC_API_PATHS:
         return await call_next(request)
@@ -277,14 +303,49 @@ async def rbac_auth_middleware(request: Request, call_next):
 
     payload = _decode_token(token) if token else {}
     if not payload or "id" not in payload:
-        return JSONResponse(status_code=401, content={"detail": "Not authenticated"})
+        return JSONResponse(status_code=401, content={"detail": "Not authenticated"}, headers={"WWW-Authenticate": "Bearer"})
 
     user = _fetch_auth_user(payload["id"])
     if not user:
-        return JSONResponse(status_code=401, content={"detail": "Not authenticated"})
+        return JSONResponse(status_code=401, content={"detail": "Not authenticated"}, headers={"WWW-Authenticate": "Bearer"})
 
     request.state.auth_user = user
     return await call_next(request)
+
+
+# Global security scheme: shows the "Authorize" button in /docs and lets
+# Swagger UI send HTTP Bearer tokens. Enforced again by the middleware above;
+# the dependency also validates when the middleware did not (public auth routes).
+bearer_scheme = HTTPBearer(
+    auto_error=False,
+    description="JWT returned by `POST /api/auth/login`. Paste it here (without the word 'Bearer').",
+)
+
+
+def require_bearer(
+    request: Request,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
+) -> Optional[dict]:
+    existing = getattr(request.state, "auth_user", None)
+    if existing:
+        return existing
+    if request.url.path in PUBLIC_API_PATHS:
+        return None
+    if not credentials or (credentials.scheme or "").lower() != "bearer":
+        raise HTTPException(status_code=401, detail="Not authenticated", headers={"WWW-Authenticate": "Bearer"})
+    payload = _decode_token(credentials.credentials)
+    if not payload or "id" not in payload:
+        raise HTTPException(status_code=401, detail="Invalid or expired token", headers={"WWW-Authenticate": "Bearer"})
+    user = _fetch_auth_user(payload["id"])
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid or expired token", headers={"WWW-Authenticate": "Bearer"})
+    request.state.auth_user = user
+    return user
+
+
+# Must be registered before the route definitions below so every operation
+# carries the HTTPBearer security requirement in the OpenAPI schema.
+app.router.dependencies.append(Depends(require_bearer))
 
 
 def _current_user(request: Request) -> dict:
@@ -388,6 +449,25 @@ def _assert_paper_access(connection, user: dict, paper_id: int) -> None:
     _assert_subject_access(user, subject_row)
 
 
+def _assert_job_access(request: Request, job_id: str) -> dict:
+    user = _current_user(request)
+    job = GENERATION_JOBS.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    owner_id = job.get("user_id")
+    if user.get("role") != "admin" and owner_id is not None and owner_id != user["id"]:
+        raise HTTPException(status_code=403, detail="Not authorized to access this job")
+    return job
+
+
+def _set_job_state(job_id: str, data: dict) -> None:
+    existing = GENERATION_JOBS.get(job_id) or {}
+    for key in ("user_id", "subject_id"):
+        if key in existing and key not in data:
+            data[key] = existing[key]
+    GENERATION_JOBS[job_id] = data
+
+
 class LoginRequest(BaseModel):
     email: str
     password: str
@@ -409,7 +489,7 @@ class AdminAction(BaseModel):
     action: str  # "approve" or "reject"
 
 
-@app.post("/api/auth/login")
+@app.post("/api/auth/login", tags=["Auth"])
 def login(request: LoginRequest):
     """Authenticate user against quest_generator.db and return token + user info"""
     connection = get_db_connection()
@@ -474,7 +554,7 @@ def login(request: LoginRequest):
         raise HTTPException(status_code=500, detail=f"Login error: {str(e)}")
 
 
-@app.post("/api/auth/create-user")
+@app.post("/api/auth/create-user", tags=["Auth"])
 def create_user(request: Request, create_request: CreateUserRequest):
     """Admin creates any user; HOD can only add staff inside their own department"""
     actor = _require_roles(request, "admin", "hod")
@@ -527,12 +607,15 @@ def create_user(request: Request, create_request: CreateUserRequest):
         raise HTTPException(status_code=500, detail=f"Error creating user: {str(e)}")
 
 
-@app.post("/api/auth/change-password")
-def change_password(request: ChangePasswordRequest):
-    """Allow a logged-in user to change their password"""
+@app.post("/api/auth/change-password", tags=["Auth"])
+def change_password(request: ChangePasswordRequest, http_request: Request):
+    """Allow a logged-in user to change their own password"""
+    actor = _current_user(http_request)
     payload = _decode_token(request.token)
     if not payload or "id" not in payload:
         raise HTTPException(status_code=401, detail="Invalid token")
+    if payload["id"] != actor["id"]:
+        raise HTTPException(status_code=403, detail="You may only change your own password")
 
     if len(request.new_password) < 8:
         raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
@@ -546,7 +629,7 @@ def change_password(request: ChangePasswordRequest):
         pw_hash = _hash_password(request.new_password)
         cursor.execute(
             f"UPDATE users SET password_hash = {placeholder}, must_change_password = 0 WHERE id = {placeholder}",
-            (pw_hash, payload["id"])
+            (pw_hash, actor["id"])
         )
         connection.commit()
         cursor.close()
@@ -557,9 +640,11 @@ def change_password(request: ChangePasswordRequest):
         raise HTTPException(status_code=500, detail=f"Error changing password: {str(e)}")
 
 
-@app.get("/api/auth/me")
-def get_me(token: str):
+@app.get("/api/auth/me", tags=["Auth"])
+def get_me(token: Optional[str] = None):
     """Return user info from token"""
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
     payload = _decode_token(token)
     if not payload or "id" not in payload:
         raise HTTPException(status_code=401, detail="Invalid token")
@@ -602,7 +687,7 @@ def get_me(token: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/admin/users")
+@app.get("/api/admin/users", tags=["Admin"])
 def get_all_users(request: Request):
     """Admin sees everyone; HOD only sees users of their own department"""
     actor = _require_roles(request, "admin", "hod")
@@ -637,7 +722,7 @@ def get_all_users(request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/api/admin/action")
+@app.post("/api/admin/action", tags=["Admin"])
 def admin_action(action: AdminAction, request: Request):
     """Approve or Reject a user (HOD: only inside their own department)"""
     actor = _require_roles(request, "admin", "hod")
@@ -677,13 +762,13 @@ def admin_action(action: AdminAction, request: Request):
 
 
 
-@app.get("/")
+@app.get("/", tags=["System"])
 def root():
     return {"message": "Quest Generator API", "version": "1.0.0"}
 
 # ==================== SUBJECT ENDPOINTS ====================
 
-@app.post("/api/subjects", response_model=SubjectResponse, status_code=status.HTTP_201_CREATED)
+@app.post("/api/subjects", tags=["Subjects"], response_model=SubjectResponse, status_code=status.HTTP_201_CREATED)
 def create_subject(
     request: Request,
     subject_id: str = Form(...),
@@ -790,7 +875,7 @@ def create_subject(
             connection.close()
         raise HTTPException(status_code=500, detail=f"Error creating subject: {str(e)}")
 
-@app.get("/api/subjects", response_model=List[SubjectResponse])
+@app.get("/api/subjects", tags=["Subjects"], response_model=List[SubjectResponse])
 def get_subjects(request: Request):
     """Get subjects visible to the caller (admin: all, HOD: own department, staff: assigned)"""
     user = _current_user(request)
@@ -813,7 +898,7 @@ def get_subjects(request: Request):
             connection.close()
         raise HTTPException(status_code=500, detail=f"Error fetching subjects: {str(e)}")
 
-@app.get("/api/subjects/{subject_id}", response_model=SubjectResponse)
+@app.get("/api/subjects/{subject_id}", tags=["Subjects"], response_model=SubjectResponse)
 def get_subject(subject_id: int, request: Request):
     """Get a specific subject by ID"""
     user = _current_user(request)
@@ -843,7 +928,7 @@ def get_subject(subject_id: int, request: Request):
         raise HTTPException(status_code=500, detail=f"Error fetching subject: {str(e)}")
 
 
-@app.post("/api/subjects/{subject_id}/course-outcome", response_model=SubjectResponse)
+@app.post("/api/subjects/{subject_id}/course-outcome", tags=["Subjects"], response_model=SubjectResponse)
 def upload_subject_course_outcome(
     request: Request,
     subject_id: int,
@@ -903,7 +988,7 @@ def upload_subject_course_outcome(
         raise HTTPException(status_code=500, detail=f"Error uploading course outcome: {str(e)}")
 
 
-@app.get("/api/subjects/{subject_id}/course-outcome-file")
+@app.get("/api/subjects/{subject_id}/course-outcome-file", tags=["Subjects"])
 def download_subject_course_outcome(subject_id: int, request: Request):
     """Download the course outcome file for a subject"""
     user = _current_user(request)
@@ -954,7 +1039,7 @@ def download_subject_course_outcome(subject_id: int, request: Request):
             connection.close()
         raise HTTPException(status_code=500, detail=f"Error downloading course outcome: {str(e)}")
 
-@app.put("/api/subjects/{subject_id}", response_model=SubjectResponse)
+@app.put("/api/subjects/{subject_id}", tags=["Subjects"], response_model=SubjectResponse)
 def update_subject(subject_id: int, subject: SubjectUpdate, request: Request):
     """Update a subject (admin, or HOD of that subject's department)"""
     actor = _require_roles(request, "admin", "hod")
@@ -1017,7 +1102,7 @@ def update_subject(subject_id: int, subject: SubjectUpdate, request: Request):
             connection.close()
         raise HTTPException(status_code=500, detail=f"Error updating subject: {str(e)}")
 
-@app.get("/api/subjects/{subject_id}/syllabus")
+@app.get("/api/subjects/{subject_id}/syllabus", tags=["Subjects"])
 def get_subject_syllabus(subject_id: int, http_request: Request):
     """Get parsed syllabus structure for a subject"""
     user = _current_user(http_request)
@@ -1088,7 +1173,7 @@ def get_subject_syllabus(subject_id: int, http_request: Request):
             connection.close()
         raise HTTPException(status_code=500, detail=f"Error fetching syllabus: {str(e)}")
 
-@app.get("/api/subjects/{subject_id}/units")
+@app.get("/api/subjects/{subject_id}/units", tags=["Subjects"])
 def get_subject_units(subject_id: int, http_request: Request):
     """Get units for a subject"""
     user = _current_user(http_request)
@@ -1131,7 +1216,7 @@ def get_subject_units(subject_id: int, http_request: Request):
             connection.close()
         raise HTTPException(status_code=500, detail=f"Error fetching units: {str(e)}")
 
-@app.get("/api/subjects/{subject_id}/topics")
+@app.get("/api/subjects/{subject_id}/topics", tags=["Subjects"])
 def get_subject_topics(subject_id: int, http_request: Request, from_unit: Optional[int] = None, to_unit: Optional[int] = None):
     """Get topics and subtopics for a subject, optionally filtered by unit range.
 
@@ -1229,26 +1314,22 @@ def get_subject_topics(subject_id: int, http_request: Request, from_unit: Option
             connection.close()
         raise HTTPException(status_code=500, detail=f"Error fetching topics: {str(e)}")
 
-@app.get("/api/jobs/{job_id}")
-def get_job_status(job_id: str):
-    if job_id not in GENERATION_JOBS:
-        raise HTTPException(status_code=404, detail="Job not found")
-    return GENERATION_JOBS[job_id]
+@app.get("/api/jobs/{job_id}", tags=["Jobs"])
+def get_job_status(job_id: str, http_request: Request):
+    job = _assert_job_access(http_request, job_id)
+    return {k: v for k, v in job.items() if k != "user_id"}
 
-@app.post("/api/jobs/{job_id}/stop")
-@app.post("/api/jobs/{job_id}/cancel")
-def stop_job(job_id: str):
-    if job_id not in GENERATION_JOBS:
-        raise HTTPException(status_code=404, detail="Job not found")
-    
-    current_job = GENERATION_JOBS[job_id]
+@app.post("/api/jobs/{job_id}/stop", tags=["Jobs"])
+@app.post("/api/jobs/{job_id}/cancel", tags=["Jobs"])
+def stop_job(job_id: str, http_request: Request):
+    current_job = _assert_job_access(http_request, job_id)
     if current_job.get("status") in ["completed", "failed", "cancelled", "stopped"]:
         return {"success": True, "message": f"Job is already {current_job.get('status')}", "job_id": job_id}
     
-    GENERATION_JOBS[job_id] = {
+    _set_job_state(job_id, {
         "status": "cancelled",
         "error": "Process stopped by user"
-    }
+    })
     return {"success": True, "message": "Job cancellation requested", "job_id": job_id}
 
 def update_job_progress(job_id: str, completed: int, total: int, message: str = ""):
@@ -1256,13 +1337,13 @@ def update_job_progress(job_id: str, completed: int, total: int, message: str = 
     if current and current.get("status") in ("cancelled", "stopped"):
         return
     percent = int((completed / total) * 100) if total > 0 else 0
-    GENERATION_JOBS[job_id] = {
+    _set_job_state(job_id, {
         "status": "pending",
         "completed": completed,
         "total": total,
         "progress": min(percent, 99),
         "message": message or f"Generated {completed} of {total} questions ({percent}%)"
-    }
+    })
 
 def run_generate_questions(job_id: str, subject_id: int, request: QuestionGenerationRequest):
     def is_cancelled():
@@ -1276,7 +1357,7 @@ def run_generate_questions(job_id: str, subject_id: int, request: QuestionGenera
 
         connection = get_db_connection()
         if not connection:
-            GENERATION_JOBS[job_id] = {"status": "failed", "error": "Database connection failed"}
+            _set_job_state(job_id, {"status": "failed", "error": "Database connection failed"})
             return
         
         cursor = get_cursor(connection)
@@ -1320,7 +1401,7 @@ def run_generate_questions(job_id: str, subject_id: int, request: QuestionGenera
             topics = request.topics
         else:
             if not topics_data:
-                GENERATION_JOBS[job_id] = {"status": "failed", "error": "No topics found for the specified unit range"}
+                _set_job_state(job_id, {"status": "failed", "error": "No topics found for the specified unit range"})
                 return
             topics = [f"{t['topic_name']} (Unit {t['unit_number']})" for t in topics_data]
 
@@ -1432,7 +1513,7 @@ def run_generate_questions(job_id: str, subject_id: int, request: QuestionGenera
             print(f"Job {job_id} was cancelled before finalizing.")
             return
 
-        GENERATION_JOBS[job_id] = {
+        _set_job_state(job_id, {
             "status": "completed",
             "completed": len(all_questions),
             "total": total_needed,
@@ -1443,15 +1524,15 @@ def run_generate_questions(job_id: str, subject_id: int, request: QuestionGenera
                 'questions': all_questions,
                 'topics_covered': len(topics)
             }
-        }
+        })
     except Exception as e:
         if not is_cancelled():
-            GENERATION_JOBS[job_id] = {
+            _set_job_state(job_id, {
                 "status": "failed",
                 "error": str(e)
-            }
+            })
 
-@app.post("/api/subjects/{subject_id}/generate-questions")
+@app.post("/api/subjects/{subject_id}/generate-questions", tags=["Subjects"])
 def generate_questions(subject_id: int, request: QuestionGenerationRequest, background_tasks: BackgroundTasks, http_request: Request):
     """Generate questions using Ollama based on topics from database"""
     user = _current_user(http_request)
@@ -1470,7 +1551,7 @@ def generate_questions(subject_id: int, request: QuestionGenerationRequest, back
         )
     
     job_id = str(uuid.uuid4())
-    GENERATION_JOBS[job_id] = {"status": "pending"}
+    GENERATION_JOBS[job_id] = {"status": "pending", "user_id": user["id"], "subject_id": subject_id}
     
     if USE_CELERY and redis_client:
         celery_run_generate_questions.delay(job_id, subject_id, request.dict())
@@ -1480,7 +1561,7 @@ def generate_questions(subject_id: int, request: QuestionGenerationRequest, back
     return {"success": True, "job_id": job_id}
 
 
-@app.post("/api/subjects/{subject_id}/generate-all-questions")
+@app.post("/api/subjects/{subject_id}/generate-all-questions", tags=["Subjects"])
 def generate_all_questions(subject_id: int, requests: List[QuestionGenerationRequest], background_tasks: BackgroundTasks, http_request: Request):
     user = _current_user(http_request)
     connection = get_db_connection()
@@ -1492,7 +1573,7 @@ def generate_all_questions(subject_id: int, requests: List[QuestionGenerationReq
         connection.close()
 
     job_id = str(uuid.uuid4())
-    GENERATION_JOBS[job_id] = {"status": "pending"}
+    GENERATION_JOBS[job_id] = {"status": "pending", "user_id": user["id"], "subject_id": subject_id}
     
     if USE_CELERY and redis_client:
         celery_run_generate_all_questions.delay(job_id, subject_id, [r.dict() for r in requests])
@@ -1734,7 +1815,7 @@ def _run_generate_all_questions(job_id: str, subject_id: int, requests: List[Que
             print(f"Job {job_id} was cancelled before completing.")
             return
 
-        GENERATION_JOBS[job_id] = {
+        _set_job_state(job_id, {
             "status": "completed",
             "completed": completed_counter[0],
             "total": grand_total,
@@ -1744,26 +1825,26 @@ def _run_generate_all_questions(job_id: str, subject_id: int, requests: List[Que
                 'parts': all_results,
                 'total_parts': len(requests)
             }
-        }
+        })
     
     except HTTPException as e:
         if not is_cancelled():
-            GENERATION_JOBS[job_id] = {
+            _set_job_state(job_id, {
                 "status": "failed",
                 "error": str(e.detail)
-            }
+            })
     except Exception as e:
         if connection:
             connection.close()
         if not is_cancelled():
-            GENERATION_JOBS[job_id] = {
+            _set_job_state(job_id, {
                 "status": "failed",
                 "error": f"Error generating questions: {str(e)}"
-            }
+            })
 
 
     
-@app.delete("/api/subjects/{subject_id}", status_code=status.HTTP_204_NO_CONTENT)
+@app.delete("/api/subjects/{subject_id}", tags=["Subjects"], status_code=status.HTTP_204_NO_CONTENT)
 def delete_subject(subject_id: int, request: Request):
     """Delete a subject and cascade delete all related data (question banks, questions, papers)"""
     _require_roles(request, "admin")
@@ -1848,7 +1929,7 @@ def delete_subject(subject_id: int, request: Request):
 
 # ==================== QUESTION BANK ENDPOINTS ====================
 
-@app.post("/api/question-banks", response_model=QuestionBankResponse, status_code=status.HTTP_201_CREATED)
+@app.post("/api/question-banks", tags=["Question Banks"], response_model=QuestionBankResponse, status_code=status.HTTP_201_CREATED)
 def create_question_bank(question_bank: QuestionBankCreate, request: Request):
     """Create a new question bank"""
     user = _current_user(request)
@@ -1888,7 +1969,7 @@ def create_question_bank(question_bank: QuestionBankCreate, request: Request):
             connection.close()
         raise HTTPException(status_code=500, detail=f"Error creating question bank: {str(e)}")
 
-@app.get("/api/question-banks", response_model=List[QuestionBankResponse])
+@app.get("/api/question-banks", tags=["Question Banks"], response_model=List[QuestionBankResponse])
 def get_all_question_banks(request: Request):
     """Get question banks visible to the caller"""
     user = _current_user(request)
@@ -1913,7 +1994,7 @@ def get_all_question_banks(request: Request):
             connection.close()
         raise HTTPException(status_code=500, detail=f"Error fetching question banks: {str(e)}")
 
-@app.get("/api/question-banks/subject/{subject_id}", response_model=List[QuestionBankResponse])
+@app.get("/api/question-banks/subject/{subject_id}", tags=["Question Banks"], response_model=List[QuestionBankResponse])
 def get_question_banks_by_subject(subject_id: int, request: Request):
     """Get all question banks for a specific subject"""
     user = _current_user(request)
@@ -1942,7 +2023,7 @@ def get_question_banks_by_subject(subject_id: int, request: Request):
             connection.close()
         raise HTTPException(status_code=500, detail=f"Error fetching question banks: {str(e)}")
 
-@app.delete("/api/question-banks/{bank_id}")
+@app.delete("/api/question-banks/{bank_id}", tags=["Question Banks"])
 def delete_question_bank(bank_id: int, request: Request):
     """Delete a question bank and all its questions"""
     user = _current_user(request)
@@ -1978,7 +2059,7 @@ def delete_question_bank(bank_id: int, request: Request):
 
 # ==================== QUESTION ENDPOINTS ====================
 
-@app.post("/api/questions/batch", status_code=status.HTTP_201_CREATED)
+@app.post("/api/questions/batch", tags=["Questions"], status_code=status.HTTP_201_CREATED)
 def create_questions_batch(questions: List[QuestionCreate], request: Request):
     """Create multiple questions at once"""
     user = _current_user(request)
@@ -1993,14 +2074,37 @@ def create_questions_batch(questions: List[QuestionCreate], request: Request):
         if not questions:
             raise HTTPException(status_code=400, detail="No questions provided")
         
-        cursor.execute(f"SELECT id FROM question_banks WHERE id = {placeholder}", (questions[0].question_bank_id,))
-        if not cursor.fetchone():
-            raise HTTPException(status_code=404, detail="Question bank not found")
-        
-        cursor.execute(f"SELECT id FROM subjects WHERE id = {placeholder}", (questions[0].subject_id,))
-        if not cursor.fetchone():
-            raise HTTPException(status_code=404, detail="Subject not found")
-        _assert_subject_id_access(connection, user, questions[0].subject_id)
+        checked_subjects = set()
+        checked_banks = set()
+        checked_images = set()
+        for question in questions:
+            if question.subject_id not in checked_subjects:
+                checked_subjects.add(question.subject_id)
+                cursor.execute(f"SELECT id FROM subjects WHERE id = {placeholder}", (question.subject_id,))
+                if not cursor.fetchone():
+                    raise HTTPException(status_code=404, detail="Subject not found")
+                _assert_subject_id_access(connection, user, question.subject_id)
+            if question.question_bank_id not in checked_banks:
+                checked_banks.add(question.question_bank_id)
+                cursor.execute(
+                    f"SELECT id, subject_id FROM question_banks WHERE id = {placeholder}",
+                    (question.question_bank_id,)
+                )
+                bank = cursor.fetchone()
+                if not bank:
+                    raise HTTPException(status_code=404, detail="Question bank not found")
+                _assert_subject_id_access(connection, user, bank["subject_id"])
+            if question.image_id and question.image_id not in checked_images:
+                checked_images.add(question.image_id)
+                cursor.execute(
+                    f"SELECT id, subject_id FROM question_images WHERE id = {placeholder}",
+                    (question.image_id,)
+                )
+                image_row = cursor.fetchone()
+                if not image_row:
+                    raise HTTPException(status_code=404, detail="Image not found")
+                if image_row["subject_id"] is not None:
+                    _assert_subject_id_access(connection, user, image_row["subject_id"])
         
         question_ids = []
         for question in questions:
@@ -2052,7 +2156,7 @@ def create_questions_batch(questions: List[QuestionCreate], request: Request):
             connection.close()
         raise HTTPException(status_code=500, detail=f"Error creating questions: {str(e)}")
 
-@app.post("/api/questions", response_model=QuestionResponse, status_code=status.HTTP_201_CREATED)
+@app.post("/api/questions", tags=["Questions"], response_model=QuestionResponse, status_code=status.HTTP_201_CREATED)
 def create_question(question: QuestionCreate, request: Request):
     """Create a new question"""
     user = _current_user(request)
@@ -2068,6 +2172,26 @@ def create_question(question: QuestionCreate, request: Request):
         if not cursor.fetchone():
             raise HTTPException(status_code=404, detail="Subject not found")
         _assert_subject_id_access(connection, user, question.subject_id)
+        
+        cursor.execute(
+            f"SELECT id, subject_id FROM question_banks WHERE id = {placeholder}",
+            (question.question_bank_id,)
+        )
+        bank = cursor.fetchone()
+        if not bank:
+            raise HTTPException(status_code=404, detail="Question bank not found")
+        _assert_subject_id_access(connection, user, bank["subject_id"])
+        
+        if question.image_id:
+            cursor.execute(
+                f"SELECT id, subject_id FROM question_images WHERE id = {placeholder}",
+                (question.image_id,)
+            )
+            image_row = cursor.fetchone()
+            if not image_row:
+                raise HTTPException(status_code=404, detail="Image not found")
+            if image_row["subject_id"] is not None:
+                _assert_subject_id_access(connection, user, image_row["subject_id"])
         
         query = f"""
             INSERT INTO questions (question_bank_id, subject_id, content, part, unit, topic, difficulty, marks, blooms_level, source, image_id)
@@ -2105,7 +2229,7 @@ def create_question(question: QuestionCreate, request: Request):
             connection.close()
         raise HTTPException(status_code=500, detail=f"Error creating question: {str(e)}")
 
-@app.post("/api/questions/upload-parse")
+@app.post("/api/questions/upload-parse", tags=["Questions"])
 def upload_and_parse_questions(
     file: UploadFile = File(...)
 ):
@@ -2223,8 +2347,9 @@ def upload_and_parse_questions(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error parsing questions file: {str(e)}")
 
-@app.post("/api/question-images/upload")
+@app.post("/api/question-images/upload", tags=["Question Images"])
 def upload_user_image(
+    request: Request,
     file: UploadFile = File(...),
     keywords: str = Form(...),
     description: Optional[str] = Form("User uploaded image"),
@@ -2234,6 +2359,15 @@ def upload_user_image(
     """
     Upload teacher/user image for question paper generation
     """
+    user = _current_user(request)
+    if subject_id is not None:
+        connection = get_db_connection()
+        if not connection:
+            raise HTTPException(status_code=500, detail="Database connection failed")
+        try:
+            _assert_subject_id_access(connection, user, subject_id)
+        finally:
+            connection.close()
     try:
         content_bytes = file.file.read()
         if not content_bytes:
@@ -2268,7 +2402,7 @@ def upload_user_image(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error uploading image: {str(e)}")
 
-@app.get("/api/questions/subject/{subject_id}", response_model=List[QuestionResponse])
+@app.get("/api/questions/subject/{subject_id}", tags=["Questions"], response_model=List[QuestionResponse])
 def get_questions_by_subject(subject_id: int, request: Request):
     """Get all questions for a specific subject"""
     user = _current_user(request)
@@ -2297,7 +2431,7 @@ def get_questions_by_subject(subject_id: int, request: Request):
             connection.close()
         raise HTTPException(status_code=500, detail=f"Error fetching questions: {str(e)}")
 
-@app.get("/api/questions/bank/{bank_id}", response_model=List[QuestionResponse])
+@app.get("/api/questions/bank/{bank_id}", tags=["Questions"], response_model=List[QuestionResponse])
 def get_questions_by_bank(bank_id: int, request: Request):
     """Get all questions for a specific question bank"""
     user = _current_user(request)
@@ -2345,7 +2479,7 @@ def get_questions_by_bank(bank_id: int, request: Request):
             connection.close()
         raise HTTPException(status_code=500, detail=f"Error fetching questions: {str(e)}")
 
-@app.get("/api/questions/by-question-bank/{question_bank_id}", response_model=List[QuestionResponse])
+@app.get("/api/questions/by-question-bank/{question_bank_id}", tags=["Questions"], response_model=List[QuestionResponse])
 def get_questions_by_question_bank_id(question_bank_id: int, request: Request):
     """Get all questions for a specific question bank - alternative endpoint"""
     user = _current_user(request)
@@ -2393,7 +2527,7 @@ def get_questions_by_question_bank_id(question_bank_id: int, request: Request):
             connection.close()
         raise HTTPException(status_code=500, detail=f"Error fetching questions: {str(e)}")
 
-@app.delete("/api/questions/{question_id}")
+@app.delete("/api/questions/{question_id}", tags=["Questions"])
 def delete_question(question_id: int, request: Request):
     """Delete a question by ID"""
     user = _current_user(request)
@@ -2430,7 +2564,7 @@ def delete_question(question_id: int, request: Request):
 
 # ==================== SEARCH ENDPOINTS ====================
 
-@app.get("/api/search/questions")
+@app.get("/api/search/questions", tags=["Search"])
 def search_questions(
     request: Request,
     q: str = "",
@@ -2524,7 +2658,7 @@ def search_questions(
             connection.close()
         raise HTTPException(status_code=500, detail=f"Search error: {str(e)}")
 
-@app.get("/api/search/papers")
+@app.get("/api/search/papers", tags=["Search"])
 def search_papers(
     request: Request,
     q: str = "",
@@ -2587,7 +2721,7 @@ def search_papers(
             connection.close()
         raise HTTPException(status_code=500, detail=f"Search error: {str(e)}")
 
-@app.get("/api/search/subjects")
+@app.get("/api/search/subjects", tags=["Search"])
 def search_subjects(request: Request, q: str = "", limit: int = 50):
     """Search for subjects"""
     user = _current_user(request)
@@ -2639,8 +2773,8 @@ def search_subjects(request: Request, q: str = "", limit: int = 50):
             connection.close()
         raise HTTPException(status_code=500, detail=f"Search error: {str(e)}")
 
-@app.get("/api/question-images/{image_id}")
-def get_question_image_by_id(image_id: int):
+@app.get("/api/question-images/{image_id}", tags=["Question Images"])
+def get_question_image_by_id(image_id: int, request: Request):
     """Get a stored question image (by image id) so previews can embed the exact image."""
     try:
         from services.image_service import ImageService
@@ -2650,6 +2784,17 @@ def get_question_image_by_id(image_id: int):
         stored = ImageService.get_image_by_id(image_id)
         if not stored or not stored.get('image_blob'):
             raise HTTPException(status_code=404, detail="Image not found")
+
+        image_subject_id = stored.get('subject_id')
+        if image_subject_id is not None:
+            user = _current_user(request)
+            connection = get_db_connection()
+            if not connection:
+                raise HTTPException(status_code=500, detail="Database connection failed")
+            try:
+                _assert_subject_id_access(connection, user, int(image_subject_id))
+            finally:
+                connection.close()
 
         mime = stored.get('mime_type') or 'image/png'
         media_type = mime if str(mime).startswith('image/') else 'image/png'
@@ -2667,8 +2812,8 @@ def get_question_image_by_id(image_id: int):
         raise HTTPException(status_code=500, detail=f"Error fetching image: {str(e)}")
 
 
-@app.get("/api/questions/{question_id}/image")
-def get_question_image(question_id: int):
+@app.get("/api/questions/{question_id}/image", tags=["Questions"])
+def get_question_image(question_id: int, request: Request):
     """Get image for a specific question for preview"""
     try:
         from services.image_integration import get_image_for_question
@@ -2683,13 +2828,21 @@ def get_question_image(question_id: int):
         placeholder = get_placeholder()
         
         # Fetch question content and associated image
-        cursor.execute(f"SELECT content, image_id FROM questions WHERE id = {placeholder}", (question_id,))
+        cursor.execute(f"SELECT content, image_id, subject_id FROM questions WHERE id = {placeholder}", (question_id,))
         question = cursor.fetchone()
-        cursor.close()
-        connection.close()
         
         if not question:
+            cursor.close()
+            connection.close()
             raise HTTPException(status_code=404, detail="Question not found")
+        
+        question_subject_id = question.get('subject_id') if isinstance(question, dict) else None
+        try:
+            if question_subject_id is not None:
+                _assert_subject_id_access(connection, _current_user(request), int(question_subject_id))
+        finally:
+            cursor.close()
+            connection.close()
         
         image_blob = None
         media_type = "image/png"
@@ -2833,7 +2986,7 @@ def ensure_default_blueprint_exists():
     """Backward-compatible wrapper used by other endpoints."""
     return ensure_default_blueprint()
 
-@app.post("/api/blueprints", response_model=BlueprintResponse)
+@app.post("/api/blueprints", tags=["Blueprints"], response_model=BlueprintResponse)
 def create_blueprint(blueprint: BlueprintCreate, request: Request):
     """Create a new blueprint from JSON structure (admin only)"""
     _require_roles(request, "admin")
@@ -2934,7 +3087,7 @@ def create_blueprint(blueprint: BlueprintCreate, request: Request):
             connection.close()
         raise HTTPException(status_code=500, detail=f"Error creating blueprint: {str(e)}")
 
-@app.put("/api/blueprints/{blueprint_id}", response_model=BlueprintResponse)
+@app.put("/api/blueprints/{blueprint_id}", tags=["Blueprints"], response_model=BlueprintResponse)
 def update_blueprint(blueprint_id: int, blueprint: BlueprintCreate, request: Request):
     """Update an existing blueprint (name, description, and parts structure). Admin only."""
     _require_roles(request, "admin")
@@ -3033,7 +3186,7 @@ def update_blueprint(blueprint_id: int, blueprint: BlueprintCreate, request: Req
         raise HTTPException(status_code=500, detail=f"Error updating blueprint: {str(e)}")
 
 
-@app.get("/api/blueprints", response_model=List[BlueprintResponse])
+@app.get("/api/blueprints", tags=["Blueprints"], response_model=List[BlueprintResponse])
 def get_blueprints():
     """Get all blueprints"""
     ensure_default_blueprint()
@@ -3057,7 +3210,7 @@ def get_blueprints():
 
 
 
-@app.get("/api/blueprints/{blueprint_id}")
+@app.get("/api/blueprints/{blueprint_id}", tags=["Blueprints"])
 def get_blueprint(blueprint_id: int):
     """Get a specific blueprint with its parts"""
     try:
@@ -3079,7 +3232,7 @@ def get_blueprint(blueprint_id: int):
 
 
 
-@app.delete("/api/blueprints/{blueprint_id}", status_code=status.HTTP_204_NO_CONTENT)
+@app.delete("/api/blueprints/{blueprint_id}", tags=["Blueprints"], status_code=status.HTTP_204_NO_CONTENT)
 def delete_blueprint(blueprint_id: int, request: Request):
     """Delete a blueprint (admin only)"""
     _require_roles(request, "admin")
@@ -3121,7 +3274,7 @@ def delete_blueprint(blueprint_id: int, request: Request):
 
 # ==================== DASHBOARD ENDPOINTS ====================
 
-@app.get("/api/dashboard/stats")
+@app.get("/api/dashboard/stats", tags=["Dashboard"])
 def get_dashboard_stats(request: Request):
     """Get dashboard statistics scoped to the caller's access"""
     user = _current_user(request)
@@ -3175,7 +3328,7 @@ def get_dashboard_stats(request: Request):
             connection.close()
         raise HTTPException(status_code=500, detail=f"Error fetching stats: {str(e)}")
 
-@app.get("/api/dashboard/recent-activity")
+@app.get("/api/dashboard/recent-activity", tags=["Dashboard"])
 def get_recent_activity(request: Request):
     """Get recent activity from multiple sources (scoped to the caller)"""
     user = _current_user(request)
@@ -3271,7 +3424,7 @@ def get_recent_activity(request: Request):
 
 # ==================== QUESTION PAPER ENDPOINTS ====================
 
-@app.post("/api/question-papers/generate")
+@app.post("/api/question-papers/generate", tags=["Question Papers"])
 def generate_question_paper_endpoint(
     http_request: Request,
     title: str = Form(...),
@@ -3429,7 +3582,7 @@ def generate_question_paper_endpoint(
             connection.close()
         raise HTTPException(status_code=500, detail=f"Error generating question paper: {str(e)}")
 
-@app.post("/api/question-papers/generate-from-data", response_model=QuestionPaperResponse)
+@app.post("/api/question-papers/generate-from-data", tags=["Question Papers"], response_model=QuestionPaperResponse)
 def generate_question_paper_from_data(request: dict, http_request: Request):
     """Generate PDF/DOCX from paper data sent by frontend"""
     user = _current_user(http_request)
@@ -3589,8 +3742,9 @@ def generate_question_paper_from_data(request: dict, http_request: Request):
             connection.close()
         raise HTTPException(status_code=500, detail=f"Error generating paper: {str(e)}")
 
-@app.post("/api/question-papers", response_model=QuestionPaperResponse)
+@app.post("/api/question-papers", tags=["Question Papers"], response_model=QuestionPaperResponse)
 def create_question_paper(
+    request: Request,
     title: str = Form(...),
     subject_id: int = Form(...),
     blueprint_id: Optional[int] = Form(None),
@@ -3601,11 +3755,13 @@ def create_question_paper(
     paper_content: UploadFile = File(...)
 ):
     """Save a pre-generated question paper to database (legacy endpoint)"""
+    user = _current_user(request)
     connection = get_db_connection()
     if not connection:
         raise HTTPException(status_code=500, detail="Database connection failed")
     
     try:
+        _assert_subject_id_access(connection, user, subject_id)
         cursor = get_cursor(connection)
         placeholder = get_placeholder()
         
@@ -3680,7 +3836,7 @@ def create_question_paper(
             connection.close()
         raise HTTPException(status_code=500, detail=f"Error saving question paper: {str(e)}")
 
-@app.get("/api/question-papers", response_model=List[QuestionPaperResponse])
+@app.get("/api/question-papers", tags=["Question Papers"], response_model=List[QuestionPaperResponse])
 def get_all_question_papers(request: Request):
     """Get question papers visible to the caller"""
     user = _current_user(request)
@@ -3721,7 +3877,7 @@ def get_all_question_papers(request: Request):
             connection.close()
         raise HTTPException(status_code=500, detail=f"Error fetching question papers: {str(e)}")
 
-@app.get("/api/question-papers/{paper_id}/download")
+@app.get("/api/question-papers/{paper_id}/download", tags=["Question Papers"])
 def download_question_paper(paper_id: int, request: Request):
     """Download the generated question paper file"""
     user = _current_user(request)
@@ -3766,7 +3922,7 @@ def download_question_paper(paper_id: int, request: Request):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error downloading paper: {str(e)}")
 
-@app.delete("/api/question-papers/{paper_id}")
+@app.delete("/api/question-papers/{paper_id}", tags=["Question Papers"])
 def delete_question_paper(paper_id: int, request: Request):
     """Delete a question paper"""
     user = _current_user(request)
@@ -3809,7 +3965,7 @@ def delete_question_paper(paper_id: int, request: Request):
 
 # ==================== GRADING & EVALUATION ENDPOINTS ====================
 
-@app.post("/api/answer-scripts/generate/{paper_id}")
+@app.post("/api/answer-scripts/generate/{paper_id}", tags=["Answer Scripts"])
 def generate_script(paper_id: int, http_request: Request):
     """Generate answer script for a question paper"""
     user = _current_user(http_request)
@@ -3873,7 +4029,7 @@ def generate_script(paper_id: int, http_request: Request):
         if connection: connection.close()
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/answer-scripts/{paper_id}")
+@app.get("/api/answer-scripts/{paper_id}", tags=["Answer Scripts"])
 def get_script(paper_id: int, http_request: Request):
     """Get answer script for a paper"""
     user = _current_user(http_request)
@@ -3896,7 +4052,7 @@ def get_script(paper_id: int, http_request: Request):
         if connection: connection.close()
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.put("/api/answer-scripts/{paper_id}")
+@app.put("/api/answer-scripts/{paper_id}", tags=["Answer Scripts"])
 def update_script(http_request: Request, paper_id: int, request_data: dict = Body(...)):
     """Update answer script for a paper"""
     user = _current_user(http_request)
@@ -3946,7 +4102,7 @@ def update_script(http_request: Request, paper_id: int, request_data: dict = Bod
         if connection: connection.close()
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/evaluations/evaluate")
+@app.post("/api/evaluations/evaluate", tags=["Evaluations"])
 def evaluate_student(
     http_request: Request,
     paper_id: int = Form(...),
@@ -4018,7 +4174,7 @@ def evaluate_student(
         if connection: connection.close()
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/evaluations/results/{paper_id}")
+@app.get("/api/evaluations/results/{paper_id}", tags=["Evaluations"])
 def get_results(paper_id: int, http_request: Request):
     """Get all evaluation results for a paper"""
     user = _current_user(http_request)
@@ -4037,7 +4193,7 @@ def get_results(paper_id: int, http_request: Request):
         if connection: connection.close()
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/evaluations/report/{paper_id}")
+@app.get("/api/evaluations/report/{paper_id}", tags=["Evaluations"])
 def get_report(paper_id: int, http_request: Request):
     """Get summary report for a paper"""
     user = _current_user(http_request)

@@ -263,7 +263,7 @@ class ImageService:
         placeholder = get_placeholder()
         query = f"""
             SELECT id, keywords, description, caption, context, image_blob, source_type, source_reference,
-                   file_name, file_path, file_hash, mime_type, width, height
+                   file_name, file_path, file_hash, mime_type, width, height, subject_id
             FROM question_images
             WHERE id = {placeholder}
             LIMIT 1
