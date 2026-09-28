@@ -36,6 +36,7 @@ class SubjectCreate(BaseModel):
     book_file: Optional[str] = None
     course_outcome_file: Optional[str] = None
     use_book_for_generation: bool = False
+    department: Optional[str] = None
 
 class SubjectUpdate(BaseModel):
     subject_id: Optional[str] = Field(None, min_length=1, max_length=50)
@@ -44,6 +45,7 @@ class SubjectUpdate(BaseModel):
     book_file: Optional[str] = None
     course_outcome_file: Optional[str] = None
     use_book_for_generation: Optional[bool] = None
+    department: Optional[str] = None
 
 class SubjectResponse(BaseModel):
     id: int
@@ -53,6 +55,7 @@ class SubjectResponse(BaseModel):
     book_file: Optional[str] = None
     course_outcome_file: Optional[str] = None
     use_book_for_generation: bool
+    department: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 

@@ -158,6 +158,13 @@ def migrate_database():
         except:
             pass
 
+        # Add department to subjects (used for HOD role scoping)
+        try:
+            cursor.execute("ALTER TABLE subjects ADD COLUMN department VARCHAR(255)")
+            print("Added column department to subjects table.")
+        except:
+            pass
+
         # Add blooms_level, source, image_id to questions
         questions_new_cols = [
             ('blooms_level', 'VARCHAR(100)'),
@@ -232,7 +239,7 @@ def migrate_database():
         # Add missing columns to users table
         users_columns = [
             ('password_hash', 'VARCHAR(255)'),
-            ('role', "VARCHAR(50) DEFAULT 'advisor'"),
+            ('role', "VARCHAR(50) DEFAULT 'staff'"),
             ('department', 'VARCHAR(255)'),
             ('must_change_password', 'BOOLEAN DEFAULT FALSE'),
             ('courses', 'JSON')
@@ -243,6 +250,14 @@ def migrate_database():
                 print(f"Added column {col_name} to users table.")
             except:
                 pass
+
+        # Legacy role rename: 'advisor' is now 'staff'
+        try:
+            cursor.execute("UPDATE users SET role = 'staff' WHERE role = 'advisor'")
+            if cursor.rowcount:
+                print(f"Migrated {cursor.rowcount} user(s) from role 'advisor' to 'staff'.")
+        except:
+            pass
         
         connection.commit()
         cursor.close()
@@ -294,6 +309,7 @@ def init_database():
                 book_file VARCHAR(500),
                 course_outcome_file VARCHAR(500),
                 use_book_for_generation BOOLEAN DEFAULT FALSE,
+                department VARCHAR(255),
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 UNIQUE KEY unique_name (name)

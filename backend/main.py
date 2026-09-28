@@ -1,4 +1,5 @@
-from fastapi import FastAPI, HTTPException, status, UploadFile, File, Form, Body, BackgroundTasks
+from fastapi import FastAPI, HTTPException, status, UploadFile, File, Form, Body, BackgroundTasks, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import uuid
 import json
@@ -207,6 +208,186 @@ def _decode_token(token: str) -> dict:
         return {}
 
 
+# ==================== ROLE BASED ACCESS CONTROL (RBAC) ====================
+
+VALID_ROLES = ("admin", "hod", "staff")
+ROLE_ALIASES = {"advisor": "staff", "teacher": "staff"}
+PUBLIC_API_PATHS = {"/api/auth/login", "/api/auth/me"}
+
+
+def _normalize_role(role: str) -> str:
+    """Map legacy/unknown roles onto the three supported roles."""
+    r = (role or "").strip().lower()
+    r = ROLE_ALIASES.get(r, r)
+    return r if r in VALID_ROLES else "staff"
+
+
+def _parse_courses(raw) -> list:
+    try:
+        courses = json.loads(raw) if raw else []
+    except (json.JSONDecodeError, TypeError):
+        courses = []
+    return courses if isinstance(courses, list) else []
+
+
+def _fetch_auth_user(user_id: int) -> Optional[dict]:
+    """Load the full user record used for role checks."""
+    connection = get_db_connection()
+    if not connection:
+        return None
+    try:
+        cursor = get_cursor(connection)
+        placeholder = get_placeholder()
+        cursor.execute(
+            f"SELECT id, email, name, role, department, courses, status FROM users WHERE id = {placeholder}",
+            (user_id,)
+        )
+        row = cursor.fetchone()
+        cursor.close()
+        connection.close()
+        if not row:
+            return None
+        user = dict(row)
+        user["role"] = _normalize_role(user.get("role"))
+        user["department"] = (user.get("department") or "").strip()
+        user["courses"] = _parse_courses(user.get("courses"))
+        return user
+    except Exception:
+        try:
+            if connection:
+                connection.close()
+        except Exception:
+            pass
+        return None
+
+
+@app.middleware("http")
+async def rbac_auth_middleware(request: Request, call_next):
+    """Require a valid JWT on every /api/* route (except public auth routes)."""
+    path = request.url.path
+    if request.method == "OPTIONS" or not path.startswith("/api/") or path in PUBLIC_API_PATHS:
+        return await call_next(request)
+
+    token = None
+    auth_header = request.headers.get("Authorization") or ""
+    if auth_header.lower().startswith("bearer "):
+        token = auth_header[7:].strip()
+    if not token:
+        token = request.query_params.get("token")
+
+    payload = _decode_token(token) if token else {}
+    if not payload or "id" not in payload:
+        return JSONResponse(status_code=401, content={"detail": "Not authenticated"})
+
+    user = _fetch_auth_user(payload["id"])
+    if not user:
+        return JSONResponse(status_code=401, content={"detail": "Not authenticated"})
+
+    request.state.auth_user = user
+    return await call_next(request)
+
+
+def _current_user(request: Request) -> dict:
+    user = getattr(request.state, "auth_user", None)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return user
+
+
+def _require_roles(request: Request, *roles: str) -> dict:
+    """Allow only the given roles, otherwise 403."""
+    user = _current_user(request)
+    if user["role"] not in roles:
+        raise HTTPException(status_code=403, detail="You do not have permission to perform this action")
+    return user
+
+
+def _assigned_subject_keys(user: dict) -> set:
+    """Subject names/codes assigned to a staff member via users.courses."""
+    keys = set()
+    for course in user.get("courses") or []:
+        if isinstance(course, dict):
+            for field in ("subject", "subject_id", "name"):
+                value = course.get(field)
+                if value:
+                    keys.add(str(value).strip().lower())
+        elif isinstance(course, str) and course.strip():
+            keys.add(course.strip().lower())
+    return keys
+
+
+def _subject_visible(user: dict, subject_row: dict) -> bool:
+    """Check whether a subject row is within the user's scope."""
+    role = user["role"]
+    if role == "admin":
+        return True
+    if role == "hod":
+        subject_dept = (subject_row.get("department") or "").strip().lower()
+        user_dept = (user.get("department") or "").strip().lower()
+        return bool(subject_dept) and bool(user_dept) and subject_dept == user_dept
+    # staff: only assigned subjects
+    keys = _assigned_subject_keys(user)
+    name = (subject_row.get("name") or "").strip().lower()
+    code = (subject_row.get("subject_id") or "").strip().lower()
+    return name in keys or code in keys
+
+
+def _assert_subject_access(user: dict, subject_row: dict) -> None:
+    if not _subject_visible(user, subject_row):
+        raise HTTPException(status_code=403, detail="You do not have access to this subject")
+
+
+def _visible_subject_rows(connection, user: dict) -> list:
+    """All subject rows within the caller's scope (None-safe for admin)."""
+    cursor = get_cursor(connection)
+    cursor.execute("SELECT id, subject_id, name, department FROM subjects")
+    rows = [dict(r) for r in cursor.fetchall()]
+    cursor.close()
+    return rows if user["role"] == "admin" else [r for r in rows if _subject_visible(user, r)]
+
+
+def _allowed_subject_ids(connection, user: dict) -> Optional[set]:
+    """None means unrestricted (admin). Otherwise a set of subject ids."""
+    if user["role"] == "admin":
+        return None
+    return {r["id"] for r in _visible_subject_rows(connection, user)}
+
+
+def _fetch_subject_row(connection, subject_id: int) -> dict:
+    cursor = get_cursor(connection)
+    placeholder = get_placeholder()
+    cursor.execute(
+        f"SELECT id, subject_id, name, department FROM subjects WHERE id = {placeholder}",
+        (subject_id,)
+    )
+    row = cursor.fetchone()
+    cursor.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="Subject not found")
+    return dict(row)
+
+
+def _assert_subject_id_access(connection, user: dict, subject_id: int) -> dict:
+    subject_row = _fetch_subject_row(connection, subject_id)
+    _assert_subject_access(user, subject_row)
+    return subject_row
+
+
+def _assert_paper_access(connection, user: dict, paper_id: int) -> None:
+    """Check access to a question paper through its subject."""
+    if user["role"] == "admin":
+        return
+    cursor = get_cursor(connection)
+    placeholder = get_placeholder()
+    cursor.execute(f"SELECT subject_id FROM question_papers WHERE id = {placeholder}", (paper_id,))
+    row = cursor.fetchone()
+    cursor.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="Question paper not found")
+    subject_row = _fetch_subject_row(connection, row["subject_id"])
+    _assert_subject_access(user, subject_row)
+
+
 class LoginRequest(BaseModel):
     email: str
     password: str
@@ -215,7 +396,7 @@ class CreateUserRequest(BaseModel):
     name: str
     email: str
     department: Optional[str] = None
-    role: str = "advisor"  # "admin" or "advisor"
+    role: str = "staff"  # "admin", "hod" or "staff"
     password: Optional[str] = "12345678"
     courses: Optional[List[dict]] = None
 
@@ -264,7 +445,7 @@ def login(request: LoginRequest):
         cursor.close()
         connection.close()
 
-        token = _make_token(user["id"], user["email"], user["role"] or "advisor")
+        token = _make_token(user["id"], user["email"], _normalize_role(user["role"]))
         
         # Parse courses if available
         try:
@@ -279,7 +460,7 @@ def login(request: LoginRequest):
                 "id": user["id"],
                 "email": user["email"],
                 "name": user["name"],
-                "role": user["role"] or "advisor",
+                "role": _normalize_role(user["role"]),
                 "department": user["department"],
                 "must_change_password": bool(user["must_change_password"]),
                 "mustChangePassword": bool(user["must_change_password"]),
@@ -294,30 +475,40 @@ def login(request: LoginRequest):
 
 
 @app.post("/api/auth/create-user")
-def create_user(request: CreateUserRequest):
-    """Admin creates a new advisor or admin user in the DB"""
+def create_user(request: Request, create_request: CreateUserRequest):
+    """Admin creates any user; HOD can only add staff inside their own department"""
+    actor = _require_roles(request, "admin", "hod")
     connection = get_db_connection()
     if not connection:
         raise HTTPException(status_code=500, detail="Database connection failed")
     try:
         cursor = get_cursor(connection)
         placeholder = get_placeholder()
-        email = request.email.strip().lower()
+        email = create_request.email.strip().lower()
 
         # Check duplicate
         cursor.execute(f"SELECT id FROM users WHERE email = {placeholder}", (email,))
         if cursor.fetchone():
             raise HTTPException(status_code=400, detail="User with this email already exists")
 
-        role = request.role if request.role in ("admin", "advisor") else "advisor"
-        pw_hash = _hash_password(request.password or "12345678")
-        must_change = 1 if (request.password is None or request.password == "12345678") else 0
-        courses_str = json.dumps(request.courses) if request.courses else "[]"
+        role = create_request.role if create_request.role in VALID_ROLES else "staff"
+        department = create_request.department
+
+        if actor["role"] == "hod":
+            # HODs may only add staff to their own department
+            if role != "staff":
+                raise HTTPException(status_code=403, detail="HOD can only add staff users")
+            role = "staff"
+            department = actor["department"]
+
+        pw_hash = _hash_password(create_request.password or "12345678")
+        must_change = 1 if (create_request.password is None or create_request.password == "12345678") else 0
+        courses_str = json.dumps(create_request.courses) if create_request.courses else "[]"
 
         cursor.execute(
             f"INSERT INTO users (email, name, role, department, password_hash, status, must_change_password, courses) "
             f"VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, 'approved', {placeholder}, {placeholder})",
-            (email, request.name, role, request.department, pw_hash, must_change, courses_str)
+            (email, create_request.name, role, department, pw_hash, must_change, courses_str)
         )
         connection.commit()
         new_id = cursor.lastrowid
@@ -326,7 +517,7 @@ def create_user(request: CreateUserRequest):
 
         return {
             "success": True,
-            "message": f"User {request.name} created with role '{role}'. Default password: 12345678",
+            "message": f"User {create_request.name} created with role '{role}'. Default password: 12345678",
             "user_id": new_id
         }
     except HTTPException:
@@ -398,7 +589,7 @@ def get_me(token: str):
             "id": user["id"],
             "email": user["email"],
             "name": user["name"],
-            "role": user["role"] or "advisor",
+            "role": _normalize_role(user["role"]),
             "department": user["department"],
             "must_change_password": bool(user["must_change_password"]),
             "mustChangePassword": bool(user["must_change_password"]),
@@ -412,35 +603,63 @@ def get_me(token: str):
 
 
 @app.get("/api/admin/users")
-def get_all_users():
-    """Get list of all users for admin dashboard"""
+def get_all_users(request: Request):
+    """Admin sees everyone; HOD only sees users of their own department"""
+    actor = _require_roles(request, "admin", "hod")
     connection = get_db_connection()
     try:
         cursor = get_cursor(connection)
-        cursor.execute(
-            "SELECT id, email, name, role, department, status, created_at, last_login, courses FROM users ORDER BY created_at DESC"
-        )
+        if actor["role"] == "hod":
+            placeholder = get_placeholder()
+            cursor.execute(
+                f"SELECT id, email, name, role, department, status, created_at, last_login, courses FROM users "
+                f"WHERE department = {placeholder} ORDER BY created_at DESC",
+                (actor["department"],)
+            )
+        else:
+            cursor.execute(
+                "SELECT id, email, name, role, department, status, created_at, last_login, courses FROM users ORDER BY created_at DESC"
+            )
         users = cursor.fetchall()
         user_list = []
         for u in users:
             ud = dict(u)
+            ud["role"] = _normalize_role(ud.get("role"))
             ud["courses"] = json.loads(ud["courses"]) if ud.get("courses") else []
             user_list.append(ud)
         cursor.close()
         connection.close()
         return user_list
+    except HTTPException:
+        raise
     except Exception as e:
         if connection: connection.close()
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/admin/action")
-def admin_action(action: AdminAction):
-    """Approve or Reject a user"""
+def admin_action(action: AdminAction, request: Request):
+    """Approve or Reject a user (HOD: only inside their own department)"""
+    actor = _require_roles(request, "admin", "hod")
     connection = get_db_connection()
     try:
         cursor = get_cursor(connection)
         placeholder = get_placeholder()
+
+        cursor.execute(
+            f"SELECT id, department FROM users WHERE id = {placeholder}",
+            (action.user_id,)
+        )
+        target = cursor.fetchone()
+        if not target:
+            cursor.close()
+            connection.close()
+            raise HTTPException(status_code=404, detail="User not found")
+        if actor["role"] == "hod" and (target.get("department") or "").strip().lower() != actor["department"].strip().lower():
+            cursor.close()
+            connection.close()
+            raise HTTPException(status_code=403, detail="You can only manage users from your department")
+
         new_status = "approved" if action.action == "approve" else "rejected"
         cursor.execute(
             f"UPDATE users SET status = {placeholder} WHERE id = {placeholder}",
@@ -450,6 +669,8 @@ def admin_action(action: AdminAction):
         cursor.close()
         connection.close()
         return {"success": True, "new_status": new_status}
+    except HTTPException:
+        raise
     except Exception as e:
         if connection: connection.close()
         raise HTTPException(status_code=500, detail=str(e))
@@ -464,14 +685,17 @@ def root():
 
 @app.post("/api/subjects", response_model=SubjectResponse, status_code=status.HTTP_201_CREATED)
 def create_subject(
+    request: Request,
     subject_id: str = Form(...),
     name: str = Form(...),
     syllabus_file: Optional[UploadFile] = File(None),
     book_file: Optional[UploadFile] = File(None),
     course_outcome_file: Optional[UploadFile] = File(None),
-    use_book_for_generation: bool = Form(False)
+    use_book_for_generation: bool = Form(False),
+    department: Optional[str] = Form(None)
 ):
-    """Create a new subject with file uploads"""
+    """Create a new subject with file uploads (admin only)"""
+    _require_roles(request, "admin")
     connection = get_db_connection()
     if not connection:
         raise HTTPException(status_code=500, detail="Database connection failed")
@@ -533,10 +757,10 @@ def create_subject(
             course_outcome_path = str(course_outcome_path)
         
         query = f"""
-            INSERT INTO subjects (subject_id, name, syllabus_file, book_file, course_outcome_file, use_book_for_generation)
-            VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})
+            INSERT INTO subjects (subject_id, name, syllabus_file, book_file, course_outcome_file, use_book_for_generation, department)
+            VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})
         """
-        cursor.execute(query, (subject_id, name, syllabus_path, book_path, course_outcome_path, use_book_for_generation))
+        cursor.execute(query, (subject_id, name, syllabus_path, book_path, course_outcome_path, use_book_for_generation, (department or "").strip() or None))
         connection.commit()
         
         subject_db_id = cursor.lastrowid
@@ -567,8 +791,9 @@ def create_subject(
         raise HTTPException(status_code=500, detail=f"Error creating subject: {str(e)}")
 
 @app.get("/api/subjects", response_model=List[SubjectResponse])
-def get_subjects():
-    """Get all subjects"""
+def get_subjects(request: Request):
+    """Get subjects visible to the caller (admin: all, HOD: own department, staff: assigned)"""
+    user = _current_user(request)
     connection = get_db_connection()
     if not connection:
         raise HTTPException(status_code=500, detail="Database connection failed")
@@ -581,15 +806,17 @@ def get_subjects():
         cursor.close()
         connection.close()
         
-        return [dict(s) for s in subjects]
+        visible = [dict(s) for s in subjects if _subject_visible(user, dict(s))]
+        return visible
     except Exception as e:
         if connection:
             connection.close()
         raise HTTPException(status_code=500, detail=f"Error fetching subjects: {str(e)}")
 
 @app.get("/api/subjects/{subject_id}", response_model=SubjectResponse)
-def get_subject(subject_id: int):
+def get_subject(subject_id: int, request: Request):
     """Get a specific subject by ID"""
+    user = _current_user(request)
     connection = get_db_connection()
     if not connection:
         raise HTTPException(status_code=500, detail="Database connection failed")
@@ -606,6 +833,7 @@ def get_subject(subject_id: int):
         if not subject:
             raise HTTPException(status_code=404, detail="Subject not found")
         
+        _assert_subject_access(user, dict(subject))
         return dict(subject)
     except HTTPException:
         raise
@@ -617,10 +845,12 @@ def get_subject(subject_id: int):
 
 @app.post("/api/subjects/{subject_id}/course-outcome", response_model=SubjectResponse)
 def upload_subject_course_outcome(
+    request: Request,
     subject_id: int,
     course_outcome_file: UploadFile = File(...)
 ):
     """Upload or replace course outcome file for an existing subject"""
+    actor = _require_roles(request, "admin", "hod")
     connection = get_db_connection()
     if not connection:
         raise HTTPException(status_code=500, detail="Database connection failed")
@@ -629,10 +859,11 @@ def upload_subject_course_outcome(
         cursor = get_cursor(connection)
         placeholder = get_placeholder()
 
-        cursor.execute(f"SELECT id, subject_id FROM subjects WHERE id = {placeholder}", (subject_id,))
+        cursor.execute(f"SELECT id, subject_id, department FROM subjects WHERE id = {placeholder}", (subject_id,))
         subject = cursor.fetchone()
         if not subject:
             raise HTTPException(status_code=404, detail="Subject not found")
+        _assert_subject_access(actor, dict(subject))
 
         if not course_outcome_file or not course_outcome_file.filename:
             raise HTTPException(status_code=400, detail="Course outcome file is required")
@@ -673,8 +904,9 @@ def upload_subject_course_outcome(
 
 
 @app.get("/api/subjects/{subject_id}/course-outcome-file")
-def download_subject_course_outcome(subject_id: int):
+def download_subject_course_outcome(subject_id: int, request: Request):
     """Download the course outcome file for a subject"""
+    user = _current_user(request)
     connection = get_db_connection()
     if not connection:
         raise HTTPException(status_code=500, detail="Database connection failed")
@@ -683,7 +915,7 @@ def download_subject_course_outcome(subject_id: int):
         cursor = get_cursor(connection)
         placeholder = get_placeholder()
         cursor.execute(
-            f"SELECT course_outcome_file FROM subjects WHERE id = {placeholder}",
+            f"SELECT course_outcome_file, subject_id, name, department FROM subjects WHERE id = {placeholder}",
             (subject_id,),
         )
         subject = cursor.fetchone()
@@ -693,6 +925,8 @@ def download_subject_course_outcome(subject_id: int):
 
         if not subject:
             raise HTTPException(status_code=404, detail="Subject not found")
+
+        _assert_subject_access(user, dict(subject))
 
         course_outcome_file = subject.get("course_outcome_file")
         if not course_outcome_file or not os.path.exists(course_outcome_file):
@@ -721,8 +955,9 @@ def download_subject_course_outcome(subject_id: int):
         raise HTTPException(status_code=500, detail=f"Error downloading course outcome: {str(e)}")
 
 @app.put("/api/subjects/{subject_id}", response_model=SubjectResponse)
-def update_subject(subject_id: int, subject: SubjectUpdate):
-    """Update a subject"""
+def update_subject(subject_id: int, subject: SubjectUpdate, request: Request):
+    """Update a subject (admin, or HOD of that subject's department)"""
+    actor = _require_roles(request, "admin", "hod")
     connection = get_db_connection()
     if not connection:
         raise HTTPException(status_code=500, detail="Database connection failed")
@@ -731,9 +966,11 @@ def update_subject(subject_id: int, subject: SubjectUpdate):
         cursor = get_cursor(connection)
         placeholder = get_placeholder()
         
-        cursor.execute(f"SELECT id FROM subjects WHERE id = {placeholder}", (subject_id,))
-        if not cursor.fetchone():
+        cursor.execute(f"SELECT id, subject_id, name, department FROM subjects WHERE id = {placeholder}", (subject_id,))
+        existing = cursor.fetchone()
+        if not existing:
             raise HTTPException(status_code=404, detail="Subject not found")
+        _assert_subject_access(actor, dict(existing))
         
         update_fields = []
         values = []
@@ -753,6 +990,9 @@ def update_subject(subject_id: int, subject: SubjectUpdate):
         if subject.use_book_for_generation is not None:
             update_fields.append(f"use_book_for_generation = {placeholder}")
             values.append(subject.use_book_for_generation)
+        if getattr(subject, "department", None) is not None:
+            update_fields.append(f"department = {placeholder}")
+            values.append(subject.department.strip() or None)
         
         if not update_fields:
             raise HTTPException(status_code=400, detail="No fields to update")
@@ -778,8 +1018,9 @@ def update_subject(subject_id: int, subject: SubjectUpdate):
         raise HTTPException(status_code=500, detail=f"Error updating subject: {str(e)}")
 
 @app.get("/api/subjects/{subject_id}/syllabus")
-def get_subject_syllabus(subject_id: int):
+def get_subject_syllabus(subject_id: int, http_request: Request):
     """Get parsed syllabus structure for a subject"""
+    user = _current_user(http_request)
     connection = get_db_connection()
     if not connection:
         raise HTTPException(status_code=500, detail="Database connection failed")
@@ -793,6 +1034,8 @@ def get_subject_syllabus(subject_id: int):
         
         if not subject:
             raise HTTPException(status_code=404, detail="Subject not found")
+        
+        _assert_subject_access(user, dict(subject))
         
         cursor.execute(f"""
             SELECT * FROM units 
@@ -846,8 +1089,9 @@ def get_subject_syllabus(subject_id: int):
         raise HTTPException(status_code=500, detail=f"Error fetching syllabus: {str(e)}")
 
 @app.get("/api/subjects/{subject_id}/units")
-def get_subject_units(subject_id: int):
+def get_subject_units(subject_id: int, http_request: Request):
     """Get units for a subject"""
+    user = _current_user(http_request)
     connection = get_db_connection()
     if not connection:
         raise HTTPException(status_code=500, detail="Database connection failed")
@@ -861,6 +1105,8 @@ def get_subject_units(subject_id: int):
         
         if not subject:
             raise HTTPException(status_code=404, detail="Subject not found")
+        
+        _assert_subject_access(user, dict(subject))
         
         cursor.execute(f"""
             SELECT id, unit_number, unit_title 
@@ -886,12 +1132,13 @@ def get_subject_units(subject_id: int):
         raise HTTPException(status_code=500, detail=f"Error fetching units: {str(e)}")
 
 @app.get("/api/subjects/{subject_id}/topics")
-def get_subject_topics(subject_id: int, from_unit: Optional[int] = None, to_unit: Optional[int] = None):
+def get_subject_topics(subject_id: int, http_request: Request, from_unit: Optional[int] = None, to_unit: Optional[int] = None):
     """Get topics and subtopics for a subject, optionally filtered by unit range.
 
     This endpoint now returns both top-level topics and their subtopics as
     flattened "topics" so the UI and generators can cover the full syllabus.
     """
+    user = _current_user(http_request)
     connection = get_db_connection()
     if not connection:
         raise HTTPException(status_code=500, detail="Database connection failed")
@@ -899,6 +1146,12 @@ def get_subject_topics(subject_id: int, from_unit: Optional[int] = None, to_unit
     try:
         cursor = get_cursor(connection)
         placeholder = get_placeholder()
+
+        cursor.execute(f"SELECT * FROM subjects WHERE id = {placeholder}", (subject_id,))
+        subject = cursor.fetchone()
+        if not subject:
+            raise HTTPException(status_code=404, detail="Subject not found")
+        _assert_subject_access(user, dict(subject))
         
         # Base topics
         if from_unit is not None and to_unit is not None:
@@ -1199,8 +1452,17 @@ def run_generate_questions(job_id: str, subject_id: int, request: QuestionGenera
             }
 
 @app.post("/api/subjects/{subject_id}/generate-questions")
-def generate_questions(subject_id: int, request: QuestionGenerationRequest, background_tasks: BackgroundTasks):
+def generate_questions(subject_id: int, request: QuestionGenerationRequest, background_tasks: BackgroundTasks, http_request: Request):
     """Generate questions using Ollama based on topics from database"""
+    user = _current_user(http_request)
+    connection = get_db_connection()
+    if not connection:
+        raise HTTPException(status_code=500, detail="Database connection failed")
+    try:
+        _assert_subject_id_access(connection, user, subject_id)
+    finally:
+        connection.close()
+
     if not test_ollama_connection(request.ai_provider):
         raise HTTPException(
             status_code=503, 
@@ -1219,7 +1481,16 @@ def generate_questions(subject_id: int, request: QuestionGenerationRequest, back
 
 
 @app.post("/api/subjects/{subject_id}/generate-all-questions")
-def generate_all_questions(subject_id: int, requests: List[QuestionGenerationRequest], background_tasks: BackgroundTasks):
+def generate_all_questions(subject_id: int, requests: List[QuestionGenerationRequest], background_tasks: BackgroundTasks, http_request: Request):
+    user = _current_user(http_request)
+    connection = get_db_connection()
+    if not connection:
+        raise HTTPException(status_code=500, detail="Database connection failed")
+    try:
+        _assert_subject_id_access(connection, user, subject_id)
+    finally:
+        connection.close()
+
     job_id = str(uuid.uuid4())
     GENERATION_JOBS[job_id] = {"status": "pending"}
     
@@ -1493,8 +1764,9 @@ def _run_generate_all_questions(job_id: str, subject_id: int, requests: List[Que
 
     
 @app.delete("/api/subjects/{subject_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_subject(subject_id: int):
+def delete_subject(subject_id: int, request: Request):
     """Delete a subject and cascade delete all related data (question banks, questions, papers)"""
+    _require_roles(request, "admin")
     connection = get_db_connection()
     if not connection:
         raise HTTPException(status_code=500, detail="Database connection failed")
@@ -1577,8 +1849,9 @@ def delete_subject(subject_id: int):
 # ==================== QUESTION BANK ENDPOINTS ====================
 
 @app.post("/api/question-banks", response_model=QuestionBankResponse, status_code=status.HTTP_201_CREATED)
-def create_question_bank(question_bank: QuestionBankCreate):
+def create_question_bank(question_bank: QuestionBankCreate, request: Request):
     """Create a new question bank"""
+    user = _current_user(request)
     connection = get_db_connection()
     if not connection:
         raise HTTPException(status_code=500, detail="Database connection failed")
@@ -1590,6 +1863,7 @@ def create_question_bank(question_bank: QuestionBankCreate):
         cursor.execute(f"SELECT id FROM subjects WHERE id = {placeholder}", (question_bank.subject_id,))
         if not cursor.fetchone():
             raise HTTPException(status_code=404, detail="Subject not found")
+        _assert_subject_id_access(connection, user, question_bank.subject_id)
         
         query = f"""
             INSERT INTO question_banks (name, subject_id, description, total_questions)
@@ -1615,13 +1889,15 @@ def create_question_bank(question_bank: QuestionBankCreate):
         raise HTTPException(status_code=500, detail=f"Error creating question bank: {str(e)}")
 
 @app.get("/api/question-banks", response_model=List[QuestionBankResponse])
-def get_all_question_banks():
-    """Get all question banks"""
+def get_all_question_banks(request: Request):
+    """Get question banks visible to the caller"""
+    user = _current_user(request)
     connection = get_db_connection()
     if not connection:
         raise HTTPException(status_code=500, detail="Database connection failed")
     
     try:
+        allowed = _allowed_subject_ids(connection, user)
         cursor = get_cursor(connection)
         cursor.execute("SELECT * FROM question_banks ORDER BY created_at DESC")
         banks = cursor.fetchall()
@@ -1629,20 +1905,24 @@ def get_all_question_banks():
         cursor.close()
         connection.close()
         
-        return [dict(bank) for bank in banks]
+        if allowed is None:
+            return [dict(bank) for bank in banks]
+        return [dict(bank) for bank in banks if bank.get("subject_id") in allowed]
     except Exception as e:
         if connection:
             connection.close()
         raise HTTPException(status_code=500, detail=f"Error fetching question banks: {str(e)}")
 
 @app.get("/api/question-banks/subject/{subject_id}", response_model=List[QuestionBankResponse])
-def get_question_banks_by_subject(subject_id: int):
+def get_question_banks_by_subject(subject_id: int, request: Request):
     """Get all question banks for a specific subject"""
+    user = _current_user(request)
     connection = get_db_connection()
     if not connection:
         raise HTTPException(status_code=500, detail="Database connection failed")
     
     try:
+        _assert_subject_id_access(connection, user, subject_id)
         cursor = get_cursor(connection)
         placeholder = get_placeholder()
         cursor.execute(
@@ -1655,14 +1935,17 @@ def get_question_banks_by_subject(subject_id: int):
         connection.close()
         
         return [dict(bank) for bank in banks]
+    except HTTPException:
+        raise
     except Exception as e:
         if connection:
             connection.close()
         raise HTTPException(status_code=500, detail=f"Error fetching question banks: {str(e)}")
 
 @app.delete("/api/question-banks/{bank_id}")
-def delete_question_bank(bank_id: int):
+def delete_question_bank(bank_id: int, request: Request):
     """Delete a question bank and all its questions"""
+    user = _current_user(request)
     connection = get_db_connection()
     if not connection:
         raise HTTPException(status_code=500, detail="Database connection failed")
@@ -1671,11 +1954,13 @@ def delete_question_bank(bank_id: int):
         cursor = get_cursor(connection)
         placeholder = get_placeholder()
         
-        cursor.execute(f"SELECT id FROM question_banks WHERE id = {placeholder}", (bank_id,))
-        if not cursor.fetchone():
+        cursor.execute(f"SELECT id, subject_id FROM question_banks WHERE id = {placeholder}", (bank_id,))
+        bank_row = cursor.fetchone()
+        if not bank_row:
             cursor.close()
             connection.close()
             raise HTTPException(status_code=404, detail="Question bank not found")
+        _assert_subject_id_access(connection, user, bank_row["subject_id"])
         
         cursor.execute(f"DELETE FROM question_banks WHERE id = {placeholder}", (bank_id,))
         connection.commit()
@@ -1694,8 +1979,9 @@ def delete_question_bank(bank_id: int):
 # ==================== QUESTION ENDPOINTS ====================
 
 @app.post("/api/questions/batch", status_code=status.HTTP_201_CREATED)
-def create_questions_batch(questions: List[QuestionCreate]):
+def create_questions_batch(questions: List[QuestionCreate], request: Request):
     """Create multiple questions at once"""
+    user = _current_user(request)
     connection = get_db_connection()
     if not connection:
         raise HTTPException(status_code=500, detail="Database connection failed")
@@ -1714,6 +2000,7 @@ def create_questions_batch(questions: List[QuestionCreate]):
         cursor.execute(f"SELECT id FROM subjects WHERE id = {placeholder}", (questions[0].subject_id,))
         if not cursor.fetchone():
             raise HTTPException(status_code=404, detail="Subject not found")
+        _assert_subject_id_access(connection, user, questions[0].subject_id)
         
         question_ids = []
         for question in questions:
@@ -1766,8 +2053,9 @@ def create_questions_batch(questions: List[QuestionCreate]):
         raise HTTPException(status_code=500, detail=f"Error creating questions: {str(e)}")
 
 @app.post("/api/questions", response_model=QuestionResponse, status_code=status.HTTP_201_CREATED)
-def create_question(question: QuestionCreate):
+def create_question(question: QuestionCreate, request: Request):
     """Create a new question"""
+    user = _current_user(request)
     connection = get_db_connection()
     if not connection:
         raise HTTPException(status_code=500, detail="Database connection failed")
@@ -1779,6 +2067,7 @@ def create_question(question: QuestionCreate):
         cursor.execute(f"SELECT id FROM subjects WHERE id = {placeholder}", (question.subject_id,))
         if not cursor.fetchone():
             raise HTTPException(status_code=404, detail="Subject not found")
+        _assert_subject_id_access(connection, user, question.subject_id)
         
         query = f"""
             INSERT INTO questions (question_bank_id, subject_id, content, part, unit, topic, difficulty, marks, blooms_level, source, image_id)
@@ -1980,13 +2269,15 @@ def upload_user_image(
         raise HTTPException(status_code=500, detail=f"Error uploading image: {str(e)}")
 
 @app.get("/api/questions/subject/{subject_id}", response_model=List[QuestionResponse])
-def get_questions_by_subject(subject_id: int):
+def get_questions_by_subject(subject_id: int, request: Request):
     """Get all questions for a specific subject"""
+    user = _current_user(request)
     connection = get_db_connection()
     if not connection:
         raise HTTPException(status_code=500, detail="Database connection failed")
     
     try:
+        _assert_subject_id_access(connection, user, subject_id)
         cursor = get_cursor(connection)
         placeholder = get_placeholder()
         cursor.execute(
@@ -1999,14 +2290,17 @@ def get_questions_by_subject(subject_id: int):
         connection.close()
         
         return [dict(q) for q in questions]
+    except HTTPException:
+        raise
     except Exception as e:
         if connection:
             connection.close()
         raise HTTPException(status_code=500, detail=f"Error fetching questions: {str(e)}")
 
 @app.get("/api/questions/bank/{bank_id}", response_model=List[QuestionResponse])
-def get_questions_by_bank(bank_id: int):
+def get_questions_by_bank(bank_id: int, request: Request):
     """Get all questions for a specific question bank"""
+    user = _current_user(request)
     connection = get_db_connection()
     if not connection:
         raise HTTPException(status_code=500, detail="Database connection failed")
@@ -2016,7 +2310,7 @@ def get_questions_by_bank(bank_id: int):
         placeholder = get_placeholder()
         
         cursor.execute(
-            f"SELECT id, name FROM question_banks WHERE id = {placeholder}",
+            f"SELECT id, name, subject_id FROM question_banks WHERE id = {placeholder}",
             (bank_id,)
         )
         bank = cursor.fetchone()
@@ -2025,6 +2319,8 @@ def get_questions_by_bank(bank_id: int):
             cursor.close()
             connection.close()
             raise HTTPException(status_code=404, detail=f"Question bank with ID {bank_id} not found")
+        
+        _assert_subject_id_access(connection, user, bank["subject_id"])
         
         cursor.execute(
             f"SELECT * FROM questions WHERE question_bank_id = {placeholder} ORDER BY created_at DESC",
@@ -2050,8 +2346,9 @@ def get_questions_by_bank(bank_id: int):
         raise HTTPException(status_code=500, detail=f"Error fetching questions: {str(e)}")
 
 @app.get("/api/questions/by-question-bank/{question_bank_id}", response_model=List[QuestionResponse])
-def get_questions_by_question_bank_id(question_bank_id: int):
+def get_questions_by_question_bank_id(question_bank_id: int, request: Request):
     """Get all questions for a specific question bank - alternative endpoint"""
+    user = _current_user(request)
     connection = get_db_connection()
     if not connection:
         raise HTTPException(status_code=500, detail="Database connection failed")
@@ -2061,7 +2358,7 @@ def get_questions_by_question_bank_id(question_bank_id: int):
         placeholder = get_placeholder()
         
         cursor.execute(
-            f"SELECT id, name FROM question_banks WHERE id = {placeholder}",
+            f"SELECT id, name, subject_id FROM question_banks WHERE id = {placeholder}",
             (question_bank_id,)
         )
         bank = cursor.fetchone()
@@ -2070,6 +2367,8 @@ def get_questions_by_question_bank_id(question_bank_id: int):
             cursor.close()
             connection.close()
             raise HTTPException(status_code=404, detail=f"Question bank with ID {question_bank_id} not found")
+        
+        _assert_subject_id_access(connection, user, bank["subject_id"])
         
         cursor.execute(
             f"SELECT * FROM questions WHERE question_bank_id = {placeholder} ORDER BY created_at DESC",
@@ -2095,8 +2394,9 @@ def get_questions_by_question_bank_id(question_bank_id: int):
         raise HTTPException(status_code=500, detail=f"Error fetching questions: {str(e)}")
 
 @app.delete("/api/questions/{question_id}")
-def delete_question(question_id: int):
+def delete_question(question_id: int, request: Request):
     """Delete a question by ID"""
+    user = _current_user(request)
     connection = get_db_connection()
     if not connection:
         raise HTTPException(status_code=500, detail="Database connection failed")
@@ -2105,13 +2405,14 @@ def delete_question(question_id: int):
         cursor = get_cursor(connection)
         placeholder = get_placeholder()
         
-        cursor.execute(f"SELECT id FROM questions WHERE id = {placeholder}", (question_id,))
+        cursor.execute(f"SELECT id, subject_id FROM questions WHERE id = {placeholder}", (question_id,))
         question = cursor.fetchone()
         
         if not question:
             cursor.close()
             connection.close()
             raise HTTPException(status_code=404, detail="Question not found")
+        _assert_subject_id_access(connection, user, question["subject_id"])
         
         cursor.execute(f"DELETE FROM questions WHERE id = {placeholder}", (question_id,))
         connection.commit()
@@ -2131,6 +2432,7 @@ def delete_question(question_id: int):
 
 @app.get("/api/search/questions")
 def search_questions(
+    request: Request,
     q: str = "",
     subject_id: Optional[int] = None,
     bank_id: Optional[int] = None,
@@ -2139,11 +2441,26 @@ def search_questions(
     limit: int = 50
 ):
     """Advanced search for questions with filters"""
+    user = _current_user(request)
     connection = get_db_connection()
     if not connection:
         raise HTTPException(status_code=500, detail="Database connection failed")
     
     try:
+        allowed = _allowed_subject_ids(connection, user)
+        if allowed is not None and not allowed:
+            return {
+                "success": True,
+                "count": 0,
+                "results": [],
+                "query": q,
+                "filters": {
+                    "subject_id": subject_id,
+                    "bank_id": bank_id,
+                    "difficulty": difficulty,
+                    "unit": unit
+                }
+            }
         cursor = get_cursor(connection)
         placeholder = get_placeholder()
         
@@ -2177,6 +2494,11 @@ def search_questions(
             query += f" AND unit = {placeholder}"
             params.append(unit)
         
+        if allowed is not None:
+            id_placeholders = ','.join([placeholder] * len(allowed))
+            query += f" AND subject_id IN ({id_placeholders})"
+            params.extend(list(allowed))
+        
         query += f" ORDER BY created_at DESC LIMIT {placeholder}"
         params.append(limit)
         
@@ -2204,16 +2526,27 @@ def search_questions(
 
 @app.get("/api/search/papers")
 def search_papers(
+    request: Request,
     q: str = "",
     subject_id: Optional[int] = None,
     limit: int = 50
 ):
     """Search for question papers"""
+    user = _current_user(request)
     connection = get_db_connection()
     if not connection:
         raise HTTPException(status_code=500, detail="Database connection failed")
     
     try:
+        allowed = _allowed_subject_ids(connection, user)
+        if allowed is not None and not allowed:
+            return {
+                "success": True,
+                "count": 0,
+                "results": [],
+                "query": q,
+                "filters": {"subject_id": subject_id}
+            }
         cursor = get_cursor(connection)
         placeholder = get_placeholder()
         
@@ -2228,6 +2561,11 @@ def search_papers(
         if subject_id:
             query += f" AND subject_id = {placeholder}"
             params.append(subject_id)
+        
+        if allowed is not None:
+            id_placeholders = ','.join([placeholder] * len(allowed))
+            query += f" AND subject_id IN ({id_placeholders})"
+            params.extend(list(allowed))
         
         query += f" ORDER BY generated_at DESC LIMIT {placeholder}"
         params.append(limit)
@@ -2250,13 +2588,22 @@ def search_papers(
         raise HTTPException(status_code=500, detail=f"Search error: {str(e)}")
 
 @app.get("/api/search/subjects")
-def search_subjects(q: str = "", limit: int = 50):
+def search_subjects(request: Request, q: str = "", limit: int = 50):
     """Search for subjects"""
+    user = _current_user(request)
     connection = get_db_connection()
     if not connection:
         raise HTTPException(status_code=500, detail="Database connection failed")
     
     try:
+        allowed = _allowed_subject_ids(connection, user)
+        if allowed is not None and not allowed:
+            return {
+                "success": True,
+                "count": 0,
+                "results": [],
+                "query": q
+            }
         cursor = get_cursor(connection)
         placeholder = get_placeholder()
         
@@ -2267,6 +2614,11 @@ def search_subjects(q: str = "", limit: int = 50):
             query += f" AND (name LIKE {placeholder} OR subject_id LIKE {placeholder})"
             search_term = f"%{q}%"
             params.extend([search_term, search_term])
+        
+        if allowed is not None:
+            id_placeholders = ','.join([placeholder] * len(allowed))
+            query += f" AND id IN ({id_placeholders})"
+            params.extend(list(allowed))
         
         query += f" ORDER BY name LIMIT {placeholder}"
         params.append(limit)
@@ -2482,8 +2834,9 @@ def ensure_default_blueprint_exists():
     return ensure_default_blueprint()
 
 @app.post("/api/blueprints", response_model=BlueprintResponse)
-def create_blueprint(blueprint: BlueprintCreate):
-    """Create a new blueprint from JSON structure"""
+def create_blueprint(blueprint: BlueprintCreate, request: Request):
+    """Create a new blueprint from JSON structure (admin only)"""
+    _require_roles(request, "admin")
     
     print("=" * 60)
     print("📥 RECEIVED BLUEPRINT DATA:")
@@ -2582,8 +2935,9 @@ def create_blueprint(blueprint: BlueprintCreate):
         raise HTTPException(status_code=500, detail=f"Error creating blueprint: {str(e)}")
 
 @app.put("/api/blueprints/{blueprint_id}", response_model=BlueprintResponse)
-def update_blueprint(blueprint_id: int, blueprint: BlueprintCreate):
-    """Update an existing blueprint (name, description, and parts structure)."""
+def update_blueprint(blueprint_id: int, blueprint: BlueprintCreate, request: Request):
+    """Update an existing blueprint (name, description, and parts structure). Admin only."""
+    _require_roles(request, "admin")
     connection = get_db_connection()
     if not connection:
         raise HTTPException(status_code=500, detail="Database connection failed")
@@ -2726,8 +3080,9 @@ def get_blueprint(blueprint_id: int):
 
 
 @app.delete("/api/blueprints/{blueprint_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_blueprint(blueprint_id: int):
-    """Delete a blueprint"""
+def delete_blueprint(blueprint_id: int, request: Request):
+    """Delete a blueprint (admin only)"""
+    _require_roles(request, "admin")
     connection = get_db_connection()
     if not connection:
         raise HTTPException(status_code=500, detail="Database connection failed")
@@ -2767,26 +3122,44 @@ def delete_blueprint(blueprint_id: int):
 # ==================== DASHBOARD ENDPOINTS ====================
 
 @app.get("/api/dashboard/stats")
-def get_dashboard_stats():
-    """Get dashboard statistics"""
+def get_dashboard_stats(request: Request):
+    """Get dashboard statistics scoped to the caller's access"""
+    user = _current_user(request)
     connection = get_db_connection()
     if not connection:
         raise HTTPException(status_code=500, detail="Database connection failed")
     
     try:
         cursor = get_cursor(connection)
-        
-        cursor.execute("SELECT COUNT(*) as count FROM subjects")
-        subjects_count = cursor.fetchone()['count']
-        
-        cursor.execute("SELECT COUNT(*) as count FROM questions")
-        questions_count = cursor.fetchone()['count']
-        
+        placeholder = get_placeholder()
+        allowed = _allowed_subject_ids(connection, user)
+
+        if allowed is None:
+            cursor.execute("SELECT COUNT(*) as count FROM subjects")
+            subjects_count = cursor.fetchone()['count']
+
+            cursor.execute("SELECT COUNT(*) as count FROM questions")
+            questions_count = cursor.fetchone()['count']
+
+            cursor.execute("SELECT COUNT(*) as count FROM question_papers")
+            papers_count = cursor.fetchone()['count']
+        elif allowed:
+            id_placeholders = ','.join([placeholder] * len(allowed))
+            id_list = list(allowed)
+
+            cursor.execute(f"SELECT COUNT(*) as count FROM subjects WHERE id IN ({id_placeholders})", tuple(id_list))
+            subjects_count = cursor.fetchone()['count']
+
+            cursor.execute(f"SELECT COUNT(*) as count FROM questions WHERE subject_id IN ({id_placeholders})", tuple(id_list))
+            questions_count = cursor.fetchone()['count']
+
+            cursor.execute(f"SELECT COUNT(*) as count FROM question_papers WHERE subject_id IN ({id_placeholders})", tuple(id_list))
+            papers_count = cursor.fetchone()['count']
+        else:
+            subjects_count = questions_count = papers_count = 0
+
         cursor.execute("SELECT COUNT(*) as count FROM blueprints")
         blueprints_count = cursor.fetchone()['count']
-        
-        cursor.execute("SELECT COUNT(*) as count FROM question_papers")
-        papers_count = cursor.fetchone()['count']
         
         cursor.close()
         connection.close()
@@ -2803,8 +3176,9 @@ def get_dashboard_stats():
         raise HTTPException(status_code=500, detail=f"Error fetching stats: {str(e)}")
 
 @app.get("/api/dashboard/recent-activity")
-def get_recent_activity():
-    """Get recent activity from multiple sources"""
+def get_recent_activity(request: Request):
+    """Get recent activity from multiple sources (scoped to the caller)"""
+    user = _current_user(request)
     connection = get_db_connection()
     if not connection:
         raise HTTPException(status_code=500, detail="Database connection failed")
@@ -2878,6 +3252,13 @@ def get_recent_activity():
         
         activities.sort(key=lambda x: x['time'], reverse=True)
         activities = activities[:10]
+
+        if user["role"] != "admin":
+            visible_names = {(r["name"] or "").strip().lower() for r in _visible_subject_rows(connection, user)}
+            activities = [
+                a for a in activities
+                if a.get("type") != "blueprint" and (a.get("subject") or "").strip().lower() in visible_names
+            ]
         
         cursor.close()
         connection.close()
@@ -2892,6 +3273,7 @@ def get_recent_activity():
 
 @app.post("/api/question-papers/generate")
 def generate_question_paper_endpoint(
+    http_request: Request,
     title: str = Form(...),
     subject_id: int = Form(...),
     question_bank_id: int = Form(...),
@@ -2904,6 +3286,7 @@ def generate_question_paper_endpoint(
     image_sources: Optional[str] = Form(None)
 ):
     """Generate actual question paper document from question bank"""
+    user = _current_user(http_request)
     connection = get_db_connection()
     if not connection:
         raise HTTPException(status_code=500, detail="Database connection failed")
@@ -2911,6 +3294,8 @@ def generate_question_paper_endpoint(
     try:
         cursor = get_cursor(connection)
         placeholder = get_placeholder()
+        
+        _assert_subject_id_access(connection, user, subject_id)
         
         if blueprint_id is None:
             ensure_default_blueprint_exists()
@@ -3045,8 +3430,9 @@ def generate_question_paper_endpoint(
         raise HTTPException(status_code=500, detail=f"Error generating question paper: {str(e)}")
 
 @app.post("/api/question-papers/generate-from-data", response_model=QuestionPaperResponse)
-def generate_question_paper_from_data(request: dict):
+def generate_question_paper_from_data(request: dict, http_request: Request):
     """Generate PDF/DOCX from paper data sent by frontend"""
+    user = _current_user(http_request)
     connection = get_db_connection()
     if not connection:
         raise HTTPException(status_code=500, detail="Database connection failed")
@@ -3071,6 +3457,7 @@ def generate_question_paper_from_data(request: dict):
         subject = cursor.fetchone()
         if not subject:
             raise HTTPException(status_code=404, detail="Subject not found")
+        _assert_subject_access(user, dict(subject))
 
         course_outcome_file = None
         try:
@@ -3294,23 +3681,37 @@ def create_question_paper(
         raise HTTPException(status_code=500, detail=f"Error saving question paper: {str(e)}")
 
 @app.get("/api/question-papers", response_model=List[QuestionPaperResponse])
-def get_all_question_papers():
-    """Get all question papers"""
+def get_all_question_papers(request: Request):
+    """Get question papers visible to the caller"""
+    user = _current_user(request)
     connection = get_db_connection()
     if not connection:
         raise HTTPException(status_code=500, detail="Database connection failed")
     
     try:
+        allowed = _allowed_subject_ids(connection, user)
         cursor = get_cursor(connection)
-        cursor.execute("""
-            SELECT qp.*, s.name as subject_name,
-                   EXISTS(SELECT 1 FROM answer_scripts WHERE question_paper_id = qp.id) as has_answer_script
-            FROM question_papers qp
-            LEFT JOIN subjects s ON qp.subject_id = s.id
-            ORDER BY qp.generated_at DESC
-        """)
+        if allowed is None:
+            cursor.execute("""
+                SELECT qp.*, s.name as subject_name,
+                       EXISTS(SELECT 1 FROM answer_scripts WHERE question_paper_id = qp.id) as has_answer_script
+                FROM question_papers qp
+                LEFT JOIN subjects s ON qp.subject_id = s.id
+                ORDER BY qp.generated_at DESC
+            """)
+        elif allowed:
+            id_placeholders = ','.join(['%s'] * len(allowed))
+            cursor.execute(f"""
+                SELECT qp.*, s.name as subject_name,
+                       EXISTS(SELECT 1 FROM answer_scripts WHERE question_paper_id = qp.id) as has_answer_script
+                FROM question_papers qp
+                LEFT JOIN subjects s ON qp.subject_id = s.id
+                WHERE qp.subject_id IN ({id_placeholders})
+                ORDER BY qp.generated_at DESC
+            """, tuple(allowed))
+        else:
+            cursor.execute("SELECT 1 FROM dual WHERE 1=0")
         papers = cursor.fetchall()
-        papers_list = [dict(paper) for paper in papers]
         cursor.close()
         connection.close()
         return [dict(p) for p in papers]
@@ -3321,13 +3722,15 @@ def get_all_question_papers():
         raise HTTPException(status_code=500, detail=f"Error fetching question papers: {str(e)}")
 
 @app.get("/api/question-papers/{paper_id}/download")
-def download_question_paper(paper_id: int):
+def download_question_paper(paper_id: int, request: Request):
     """Download the generated question paper file"""
+    user = _current_user(request)
     connection = get_db_connection()
     if not connection:
         raise HTTPException(status_code=500, detail="Database connection failed")
     
     try:
+        _assert_paper_access(connection, user, paper_id)
         cursor = get_cursor(connection)
         placeholder = get_placeholder()
         cursor.execute(f"SELECT file_path, title, file_format FROM question_papers WHERE id = {placeholder}", (paper_id,))
@@ -3364,13 +3767,15 @@ def download_question_paper(paper_id: int):
         raise HTTPException(status_code=500, detail=f"Error downloading paper: {str(e)}")
 
 @app.delete("/api/question-papers/{paper_id}")
-def delete_question_paper(paper_id: int):
+def delete_question_paper(paper_id: int, request: Request):
     """Delete a question paper"""
+    user = _current_user(request)
     connection = get_db_connection()
     if not connection:
         raise HTTPException(status_code=500, detail="Database connection failed")
     
     try:
+        _assert_paper_access(connection, user, paper_id)
         cursor = get_cursor(connection)
         placeholder = get_placeholder()
         
@@ -3405,9 +3810,12 @@ def delete_question_paper(paper_id: int):
 # ==================== GRADING & EVALUATION ENDPOINTS ====================
 
 @app.post("/api/answer-scripts/generate/{paper_id}")
-def generate_script(paper_id: int):
+def generate_script(paper_id: int, http_request: Request):
     """Generate answer script for a question paper"""
+    user = _current_user(http_request)
     connection = get_db_connection()
+    if connection:
+        _assert_paper_access(connection, user, paper_id)
     try:
         cursor = get_cursor(connection)
         placeholder = get_placeholder()
@@ -3466,9 +3874,12 @@ def generate_script(paper_id: int):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/answer-scripts/{paper_id}")
-def get_script(paper_id: int):
+def get_script(paper_id: int, http_request: Request):
     """Get answer script for a paper"""
+    user = _current_user(http_request)
     connection = get_db_connection()
+    if connection:
+        _assert_paper_access(connection, user, paper_id)
     try:
         cursor = get_cursor(connection)
         placeholder = get_placeholder()
@@ -3486,9 +3897,12 @@ def get_script(paper_id: int):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.put("/api/answer-scripts/{paper_id}")
-def update_script(paper_id: int, request_data: dict = Body(...)):
+def update_script(http_request: Request, paper_id: int, request_data: dict = Body(...)):
     """Update answer script for a paper"""
+    user = _current_user(http_request)
     connection = get_db_connection()
+    if connection:
+        _assert_paper_access(connection, user, paper_id)
     try:
         cursor = get_cursor(connection)
         placeholder = get_placeholder()
@@ -3534,6 +3948,7 @@ def update_script(paper_id: int, request_data: dict = Body(...)):
 
 @app.post("/api/evaluations/evaluate")
 def evaluate_student(
+    http_request: Request,
     paper_id: int = Form(...),
     student_name: str = Form(...),
     register_number: str = Form(...),
@@ -3541,7 +3956,10 @@ def evaluate_student(
     student_file: UploadFile = File(...)
 ):
     """Upload student paper and evaluate using AI"""
+    user = _current_user(http_request)
     connection = get_db_connection()
+    if connection:
+        _assert_paper_access(connection, user, paper_id)
     try:
         cursor = get_cursor(connection)
         placeholder = get_placeholder()
@@ -3601,9 +4019,12 @@ def evaluate_student(
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/evaluations/results/{paper_id}")
-def get_results(paper_id: int):
+def get_results(paper_id: int, http_request: Request):
     """Get all evaluation results for a paper"""
+    user = _current_user(http_request)
     connection = get_db_connection()
+    if connection:
+        _assert_paper_access(connection, user, paper_id)
     try:
         cursor = get_cursor(connection)
         placeholder = get_placeholder()
@@ -3617,9 +4038,12 @@ def get_results(paper_id: int):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/evaluations/report/{paper_id}")
-def get_report(paper_id: int):
+def get_report(paper_id: int, http_request: Request):
     """Get summary report for a paper"""
+    user = _current_user(http_request)
     connection = get_db_connection()
+    if connection:
+        _assert_paper_access(connection, user, paper_id)
     try:
         cursor = get_cursor(connection)
         placeholder = get_placeholder()

@@ -6,8 +6,9 @@ import {
     ChevronLeft,
     ArrowRight
 } from 'lucide-react';
+import { useAuth } from '../context/useAuth';
 
-const steps = [
+const allSteps = [
     { id: 'subjects', label: 'Subjects', path: '/subjects' },
     { id: 'questions', label: 'Questions', path: '/question-bank' },
     { id: 'blueprints', label: 'Blueprints', path: '/blueprints' },
@@ -18,14 +19,19 @@ const steps = [
 const WorkflowHeader = () => {
     const location = useLocation();
     const navigate = useNavigate();
+    const { isAdmin } = useAuth();
+
+    // Hide the Blueprints step from non-admins
+    const steps = isAdmin ? allSteps : allSteps.filter(s => s.id !== 'blueprints');
 
     const getCurrentStepIndex = () => {
         const path = location.pathname;
-        if (path.startsWith('/subjects')) return 0;
-        if (path.startsWith('/generate-questions') || path.startsWith('/question-bank')) return 1;
-        if (path.startsWith('/blueprints')) return 2;
-        if (path.startsWith('/generate-paper') || path.startsWith('/generated-papers')) return 3;
-        if (path.startsWith('/grading-dashboard') || path.startsWith('/evaluation-results')) return 4;
+        const match = (prefix) => path.startsWith(prefix);
+        if (match('/subjects')) return steps.findIndex(s => s.id === 'subjects');
+        if (match('/generate-questions') || match('/question-bank')) return steps.findIndex(s => s.id === 'questions');
+        if (match('/blueprints')) return steps.findIndex(s => s.id === 'blueprints');
+        if (match('/generate-paper') || match('/generated-papers')) return steps.findIndex(s => s.id === 'papers');
+        if (match('/grading-dashboard') || match('/evaluation-results')) return steps.findIndex(s => s.id === 'grading');
         return -1;
     };
 

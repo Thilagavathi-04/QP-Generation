@@ -44,12 +44,15 @@ export function AuthProvider({ children }) {
     setCurrentUser({ ...userData, token });
   }, []);
 
+  const role = currentUser?.role;
   const value = {
     currentUser,
     user: currentUser,
     userData: currentUser,          // backward-compat alias used by Profile.jsx etc.
-    isAdmin: currentUser?.role === 'admin',
-    isAdvisor: currentUser?.role === 'advisor',
+    isAdmin: role === 'admin',
+    isHod: role === 'hod',
+    isStaff: role === 'staff' || role === 'advisor',
+    isAdvisor: role === 'advisor' || role === 'staff', // legacy alias
     token: currentUser?.token || null,
     logout,
     setSession,

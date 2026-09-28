@@ -2,13 +2,16 @@ import React, { useState, useEffect } from 'react';
 import { UserPlus, User, BookOpen, Trash } from 'lucide-react';
 import axios from 'axios';
 import { showToast } from '../utils/toast';
+import { useAuth } from '../context/useAuth';
 
 const API_BASE = import.meta.env.VITE_API_URL || import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8010';
 
 export default function AdminProfile() {
+  const { isAdmin, isHod, userData } = useAuth();
   const [facultyName, setFacultyName] = useState('');
   const [facultyEmail, setFacultyEmail] = useState('');
-  const [facultyDept, setFacultyDept] = useState('');
+  const [facultyDept, setFacultyDept] = useState(isHod ? (userData?.department || '') : '');
+  const [facultyRole, setFacultyRole] = useState('staff');
   
   const [courses, setCourses] = useState([]);
   const [currentRegulation, setCurrentRegulation] = useState('');
@@ -52,8 +55,8 @@ export default function AdminProfile() {
       const payload = {
         name: facultyName,
         email: facultyEmail,
-        department: facultyDept,
-        role: "advisor", // advisor role
+        department: isHod ? (userData?.department || facultyDept) : facultyDept,
+        role: isHod ? "staff" : facultyRole,
         password: defaultPassword,
         courses: courses
       };
@@ -66,7 +69,8 @@ export default function AdminProfile() {
         // Clear form
         setFacultyName('');
         setFacultyEmail('');
-        setFacultyDept('');
+        if (!isHod) setFacultyDept('');
+        setFacultyRole('staff');
         setCourses([]);
         
         fetchUsers();
@@ -90,8 +94,8 @@ export default function AdminProfile() {
         marginBottom: '2rem',
         color: 'white'
       }}>
-        <h1 style={{ color: 'white', margin: 0, textShadow: '0 2px 4px rgba(0,0,0,0.1)' }}>Manage Faculty Profiles</h1>
-        <p style={{ margin: '0.5rem 0 0 0', opacity: 0.9 }}>Add and manage user access & course assignments</p>
+        <h1 style={{ color: 'white', margin: 0, textShadow: '0 2px 4px rgba(0,0,0,0.1)' }}>{isAdmin ? 'Manage Faculty Profiles' : 'Add Staff to Your Department'}</h1>
+        <p style={{ margin: '0.5rem 0 0 0', opacity: 0.9 }}>{isAdmin ? 'Add and manage user access & course assignments' : `Add staff members for the ${userData?.department || 'your'} department`}</p>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '2rem' }}>
@@ -99,7 +103,7 @@ export default function AdminProfile() {
         {/* ADD FACULTY CARD */}
         <div className="card">
           <h3 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1.5rem', color: 'var(--primary-700)' }}>
-            <UserPlus size={20} /> Add New Faculty User
+            <UserPlus size={20} /> {isAdmin ? 'Add New Faculty User' : 'Add New Staff User'}
           </h3>
           <form onSubmit={handleAddFaculty}>
             <div className="form-group" style={{ marginBottom: '1rem' }}>
@@ -114,8 +118,32 @@ export default function AdminProfile() {
             
             <div className="form-group" style={{ marginBottom: '1rem' }}>
               <label className="form-label">Department</label>
-              <input type="text" required className="form-input" value={facultyDept} onChange={(e) => setFacultyDept(e.target.value)} placeholder="e.g. AIML"/>
+              <input
+                type="text"
+                required
+                className="form-input"
+                value={facultyDept}
+                onChange={(e) => setFacultyDept(e.target.value)}
+                placeholder="e.g. AIML"
+                disabled={isHod}
+                style={isHod ? { background: 'var(--secondary-50)', cursor: 'not-allowed' } : undefined}
+              />
             </div>
+
+            {isAdmin && (
+            <div className="form-group" style={{ marginBottom: '1rem' }}>
+              <label className="form-label">Role</label>
+              <select
+                className="form-input"
+                value={facultyRole}
+                onChange={(e) => setFacultyRole(e.target.value)}
+              >
+                <option value="staff">Staff — access only assigned subjects</option>
+                <option value="hod">HOD — access own department subjects &amp; staff</option>
+                <option value="admin">Admin — full access</option>
+              </select>
+            </div>
+            )}
             
             <div style={{ 
               marginBottom: '1rem', 
@@ -160,7 +188,7 @@ export default function AdminProfile() {
             </div>
 
             <button type="submit" disabled={loading} className="btn btn-primary" style={{ width: '100%' }}>
-              {loading ? 'Adding Faculty...' : 'Create Faculty Profile'}
+              {loading ? 'Adding User...' : (isAdmin ? 'Create Faculty Profile' : 'Create Staff Profile')}
             </button>
           </form>
         </div>
@@ -168,7 +196,7 @@ export default function AdminProfile() {
         {/* FACULTY LIST CARD */}
         <div className="card">
           <h3 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1.5rem', color: 'var(--primary-700)' }}>
-            <User size={20} /> Registered Faculty
+            <User size={20} /> {isAdmin ? 'Registered Faculty' : 'Department Staff'}
           </h3>
           
           <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
@@ -181,6 +209,8 @@ export default function AdminProfile() {
                     <div>
                       <strong style={{ fontSize: '1.1rem', color: 'var(--primary-800)' }}>{user.name || user.Name || 'Unknown'}</strong>
                       {user.role === 'admin' && <span style={{ marginLeft: '0.5rem', fontSize: '0.7rem', padding: '2px 6px', background: 'var(--danger-100)', color: 'var(--danger-700)', borderRadius: '4px' }}>ADMIN</span>}
+                      {user.role === 'hod' && <span style={{ marginLeft: '0.5rem', fontSize: '0.7rem', padding: '2px 6px', background: 'var(--warning-100, #fef3c7)', color: 'var(--warning-700, #92400e)', borderRadius: '4px' }}>HOD</span>}
+                      {(user.role === 'staff' || user.role === 'advisor') && <span style={{ marginLeft: '0.5rem', fontSize: '0.7rem', padding: '2px 6px', background: 'var(--primary-100)', color: 'var(--primary-700)', borderRadius: '4px' }}>STAFF</span>}
                     </div>
                     <span style={{ fontSize: '0.85rem', color: 'var(--primary-600)', background: 'var(--primary-100)', padding: '2px 8px', borderRadius: '12px' }}>{user.department || user.Dept || 'N/A'}</span>
                   </div>

@@ -2,10 +2,12 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { CheckCircle, XCircle, Trash2, Shield, Search } from 'lucide-react';
 import '../styles/Admin.css'; // We will create this next
+import { useAuth } from '../context/useAuth';
 
 const API_BASE = import.meta.env.VITE_API_URL || import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8010';
 
 const AdminDashboard = () => {
+    const { isAdmin, userData } = useAuth();
     const [users, setUsers] = useState([]);
     const [isLoading, setIsLoading] = useState(true);
     const [searchTerm, setSearchTerm] = useState('');
@@ -71,8 +73,8 @@ const AdminDashboard = () => {
     return (
         <div className="admin-container">
             <div className="admin-header">
-                <h1><Shield size={32} /> Admin Dashboard</h1>
-                <p>Manage user access requests</p>
+                <h1><Shield size={32} /> {isAdmin ? 'Admin Dashboard' : 'Department Users'}</h1>
+                <p>{isAdmin ? 'Manage user access requests' : `Manage users in the ${userData?.department || 'your'} department`}</p>
             </div>
 
             <div className="admin-controls">

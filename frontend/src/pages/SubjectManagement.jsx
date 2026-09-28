@@ -4,8 +4,12 @@ import { Plus, Edit, Trash2, BookOpen, Database, FileText, Upload, Loader2 } fro
 import api from '../utils/api'
 import { showToast } from '../utils/toast'
 import Modal from '../components/Modal'
+import { useAuth } from '../context/useAuth'
 
 const SubjectManagement = () => {
+  const { isAdmin, isHod } = useAuth()
+  const canManageSubjects = isAdmin
+  const canUploadCourseOutcome = isAdmin || isHod
   const [subjects, setSubjects] = useState([])
   const [loading, setLoading] = useState(true)
   const [showCreateForm, setShowCreateForm] = useState(false)
@@ -14,6 +18,7 @@ const SubjectManagement = () => {
   const [formData, setFormData] = useState({
     subjectId: '',
     name: '',
+    department: '',
     syllabusFile: null,
     bookFile: null,
     courseOutcomeFile: null,
@@ -59,6 +64,7 @@ const SubjectManagement = () => {
       const formDataToSend = new FormData()
       formDataToSend.append('subject_id', formData.subjectId)
       formDataToSend.append('name', formData.name)
+      formDataToSend.append('department', formData.department || '')
       formDataToSend.append('use_book_for_generation', formData.useBookForGeneration)
 
       if (formData.syllabusFile) {
@@ -83,6 +89,7 @@ const SubjectManagement = () => {
       setFormData({
         subjectId: '',
         name: '',
+        department: '',
         syllabusFile: null,
         bookFile: null,
         courseOutcomeFile: null,
@@ -181,21 +188,23 @@ const SubjectManagement = () => {
               Create and manage subjects with syllabus and reference materials
             </p>
           </div>
-          <button
-            onClick={() => setShowCreateForm(!showCreateForm)}
-            className="btn"
-            style={{
-              background: 'white',
-              color: 'var(--primary-600)',
-              fontWeight: '600',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.5rem'
-            }}
-          >
-            <Plus size={20} />
-            {showCreateForm ? 'Cancel' : 'Add Subject'}
-          </button>
+          {canManageSubjects && (
+            <button
+              onClick={() => setShowCreateForm(!showCreateForm)}
+              className="btn"
+              style={{
+                background: 'white',
+                color: 'var(--primary-600)',
+                fontWeight: '600',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.5rem'
+              }}
+            >
+              <Plus size={20} />
+              {showCreateForm ? 'Cancel' : 'Add Subject'}
+            </button>
+          )}
         </div>
       </div>
 
@@ -235,6 +244,17 @@ const SubjectManagement = () => {
                   required
                 />
               </div>
+            </div>
+
+            <div className="form-group" style={{ marginBottom: '1.5rem' }}>
+              <label className="form-label">Department</label>
+              <input
+                type="text"
+                className="form-input"
+                value={formData.department}
+                onChange={(e) => setFormData(prev => ({ ...prev, department: e.target.value }))}
+                placeholder="e.g. AIML, CSE (used for HOD access)"
+              />
             </div>
 
             <div className="form-row">
@@ -372,13 +392,15 @@ const SubjectManagement = () => {
           <p style={{ color: '#64748b', marginBottom: '2rem' }}>
             Start by creating your first subject with syllabus upload
           </p>
-          <button
-            onClick={() => setShowCreateForm(true)}
-            className="btn btn-primary"
-          >
-            <Plus size={20} />
-            Create First Subject
-          </button>
+          {canManageSubjects && (
+            <button
+              onClick={() => setShowCreateForm(true)}
+              className="btn btn-primary"
+            >
+              <Plus size={20} />
+              Create First Subject
+            </button>
+          )}
         </div>
       ) : (
         <div style={{
@@ -423,6 +445,22 @@ const SubjectManagement = () => {
               }}>
                 ID: {subject.subject_id}
               </div>
+
+              {subject.department && (
+                <div style={{
+                  display: 'inline-block',
+                  marginLeft: '0.5rem',
+                  background: 'var(--primary-100)',
+                  color: 'var(--primary-700)',
+                  padding: '0.25rem 0.75rem',
+                  borderRadius: '20px',
+                  fontSize: '0.75rem',
+                  fontWeight: '600',
+                  marginBottom: '1rem'
+                }}>
+                  Dept: {subject.department}
+                </div>
+              )}
 
               <div style={{ fontSize: '0.875rem', color: '#64748b', marginBottom: '1.5rem' }}>
                 {subject.syllabus_file && (
@@ -536,16 +574,18 @@ const SubjectManagement = () => {
                   <Database size={16} />
                   Bank
                 </Link>
-                <button
-                  onClick={() => handleDelete(subject.id)}
-                  className="btn btn-danger"
-                  style={{
-                    fontSize: '0.875rem',
-                    padding: '0.5rem 0.75rem'
-                  }}
-                >
-                  <Trash2 size={16} />
-                </button>
+                {canManageSubjects && (
+                  <button
+                    onClick={() => handleDelete(subject.id)}
+                    className="btn btn-danger"
+                    style={{
+                      fontSize: '0.875rem',
+                      padding: '0.5rem 0.75rem'
+                    }}
+                  >
+                    <Trash2 size={16} />
+                  </button>
+                )}
 
                 <input
                   id={`co-upload-${subject.id}`}
@@ -558,20 +598,22 @@ const SubjectManagement = () => {
                     e.target.value = ''
                   }}
                 />
-                <label
-                  htmlFor={`co-upload-${subject.id}`}
-                  className="btn"
-                  style={{
-                    fontSize: '0.875rem',
-                    padding: '0.5rem 0.75rem',
-                    background: uploadingCourseOutcomeFor === subject.id ? '#94a3b8' : 'var(--gradient-mint-fresh)',
-                    color: 'white',
-                    cursor: uploadingCourseOutcomeFor === subject.id ? 'not-allowed' : 'pointer',
-                    opacity: uploadingCourseOutcomeFor === subject.id ? 0.8 : 1,
-                  }}
-                >
-                  {uploadingCourseOutcomeFor === subject.id ? <Loader2 size={16} /> : <Upload size={16} />}
-                </label>
+                {canUploadCourseOutcome && (
+                  <label
+                    htmlFor={`co-upload-${subject.id}`}
+                    className="btn"
+                    style={{
+                      fontSize: '0.875rem',
+                      padding: '0.5rem 0.75rem',
+                      background: uploadingCourseOutcomeFor === subject.id ? '#94a3b8' : 'var(--gradient-mint-fresh)',
+                      color: 'white',
+                      cursor: uploadingCourseOutcomeFor === subject.id ? 'not-allowed' : 'pointer',
+                      opacity: uploadingCourseOutcomeFor === subject.id ? 0.8 : 1,
+                    }}
+                  >
+                    {uploadingCourseOutcomeFor === subject.id ? <Loader2 size={16} /> : <Upload size={16} />}
+                  </label>
+                )}
               </div>
             </div>
           ))}

@@ -48,6 +48,15 @@ const AdminRoute = ({ children }) => {
   return children;
 };
 
+// Restrict to specific roles (e.g. admin + hod)
+const RoleRoute = ({ roles, children }) => {
+  const { currentUser } = useAuth();
+  if (!currentUser) return <Navigate to="/login" replace />;
+  const role = currentUser.role === 'advisor' ? 'staff' : currentUser.role;
+  if (!roles.includes(role)) return <Navigate to="/" replace />;
+  return children;
+};
+
 function App() {
   return (
     <QueryClientProvider client={queryClient}>
@@ -76,8 +85,9 @@ function App() {
 
               {/* Admin Only Routes */}
               <Route path="/blueprints" element={<PrivateRoute><AdminRoute><BlueprintManagement /></AdminRoute></PrivateRoute>} />
-              <Route path="/admin" element={<PrivateRoute><AdminRoute><AdminDashboard /></AdminRoute></PrivateRoute>} />
-              <Route path="/add-profile" element={<PrivateRoute><AdminRoute><AdminProfile /></AdminRoute></PrivateRoute>} />
+              {/* Admin + HOD Routes (user management) */}
+              <Route path="/admin" element={<PrivateRoute><RoleRoute roles={['admin', 'hod']}><AdminDashboard /></RoleRoute></PrivateRoute>} />
+              <Route path="/add-profile" element={<PrivateRoute><RoleRoute roles={['admin', 'hod']}><AdminProfile /></RoleRoute></PrivateRoute>} />
               
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>

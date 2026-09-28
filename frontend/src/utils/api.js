@@ -1,4 +1,5 @@
 import axios from 'axios'
+import { attachAuthHeader, getAuthToken } from './authHeader'
 
 // Configure base URL for API calls
 const API_BASE_URL = import.meta.env.VITE_API_URL || import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8010'
@@ -10,6 +11,9 @@ const api = axios.create({
   },
   timeout: 600000, // 10 minutes
 })
+
+// Attach the JWT to every request
+api.interceptors.request.use(attachAuthHeader)
 
 // API endpoints for subjects
 export const subjectAPI = {
@@ -82,6 +86,15 @@ api.interceptors.response.use(
     if (error.response) {
       // Server responded with error status
       console.error('API Error:', error.response.data)
+
+      // Session expired / not authenticated — return to login
+      if (error.response.status === 401 && getAuthToken()) {
+        localStorage.removeItem('qp_token')
+        if (window.location.pathname !== '/login') {
+          window.location.href = '/login'
+        }
+      }
+
       // Extract FastAPI detail message
       const detail = error.response.data.detail
       const message = typeof detail === 'string' ? detail :

@@ -18,7 +18,8 @@ import { useAuth } from '../context/useAuth'
 
 const Sidebar = () => {
     const location = useLocation()
-    const { userData, logout, isAdmin } = useAuth()
+    const { userData, logout, isAdmin, isHod } = useAuth()
+    const role = userData?.role === 'advisor' ? 'staff' : userData?.role
 
     const isActive = (path) => {
         if (path === '/') return location.pathname === '/'
@@ -47,31 +48,38 @@ const Sidebar = () => {
         }
     ]
 
-    // Only show Course Content and Blueprints to Admins
-    if (isAdmin) {
-        // Add Course Content for admins only
-        navGroups.splice(1, 0, {
-            title: 'Course Content',
-            items: [
-                { path: '/subjects', label: 'Subjects', icon: BookOpen },
-                { path: '/question-bank', label: 'Question Bank', icon: Database },
-            ]
-        });
+    // Course Content: visible to every role (data is scoped per role on the backend)
+    navGroups.splice(1, 0, {
+        title: 'Course Content',
+        items: [
+            { path: '/subjects', label: 'Subjects', icon: BookOpen },
+            { path: '/question-bank', label: 'Question Bank', icon: Database },
+        ]
+    });
 
-        // Find Assessment group and add Blueprints
+    // Blueprints: admin only
+    if (isAdmin) {
         const assessmentGroup = navGroups.find(g => g.title === 'Assessment');
         if (assessmentGroup) {
             assessmentGroup.items.unshift({ path: '/blueprints', label: 'Blueprints', icon: Layout });
         }
+    }
 
+    // System (user management): admin + HOD
+    if (isAdmin || isHod) {
         navGroups.push({
             title: 'System',
             items: [
                 { path: '/admin', label: 'Admin Dashboard', icon: Shield },
-                { path: '/add-profile', label: 'Manage Faculty', icon: Settings }
+                { path: '/add-profile', label: isAdmin ? 'Manage Faculty' : 'Add Staff', icon: Settings }
             ]
         });
     }
+
+    const roleLabel =
+        role === 'admin' ? 'Administrator' :
+        role === 'hod' ? 'Head of Department' :
+        'Faculty';
 
     // Add Profile to everyone
     navGroups.push({
@@ -154,7 +162,7 @@ const Sidebar = () => {
                         </div>
                         <div style={{ overflow: 'hidden' }}>
                             <p style={{ margin: 0, fontSize: '0.875rem', fontWeight: '600', color: 'white', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{userData?.name || userData?.Name || 'User'}</p>
-                            <p style={{ margin: 0, fontSize: '0.75rem', color: 'rgba(255,255,255,0.5)' }}>{userData?.role === 'admin' ? 'Administrator' : 'Faculty'}</p>
+                            <p style={{ margin: 0, fontSize: '0.75rem', color: 'rgba(255,255,255,0.5)' }}>{roleLabel}</p>
                         </div>
                     </div>
                 </div>

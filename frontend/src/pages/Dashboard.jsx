@@ -2,11 +2,13 @@ import React, { useState, useEffect } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Plus, BookOpen, FileText, Archive, TrendingUp, Database, Layout } from 'lucide-react'
 import axios from 'axios'
+import { useAuth } from '../context/useAuth'
 
 const API_URL = import.meta.env.VITE_API_URL || import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8010'
 
 const Dashboard = () => {
   const navigate = useNavigate()
+  const { isAdmin } = useAuth()
   const [stats, setStats] = useState({
     totalSubjects: 0,
     totalQuestions: 0,
@@ -105,6 +107,7 @@ const Dashboard = () => {
           <div className="stat-label">TOTAL QUESTIONS</div>
         </div>
 
+        {isAdmin && (
         <div
           onDoubleClick={() => navigate('/blueprints')}
           className="stat-card fade-in"
@@ -118,6 +121,7 @@ const Dashboard = () => {
           <div className="stat-value">{stats.totalBlueprints}</div>
           <div className="stat-label">BLUEPRINTS</div>
         </div>
+        )}
 
         <div
           onDoubleClick={() => navigate('/generated-papers')}
@@ -166,6 +170,7 @@ const Dashboard = () => {
             Manage Question Bank
           </Link>
 
+          {isAdmin && (
           <Link to="/blueprints" className="btn btn-success" style={{
             padding: '1rem 0.5rem',
             fontSize: '0.9rem'
@@ -173,6 +178,7 @@ const Dashboard = () => {
             <Layout size={18} />
             Manage Blueprints
           </Link>
+          )}
 
           <Link to="/generated-papers" className="btn btn-warning" style={{
             padding: '1rem 0.5rem',

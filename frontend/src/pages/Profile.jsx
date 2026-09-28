@@ -25,7 +25,10 @@ export default function Profile() {
       const currentToken = token || user?.token || localStorage.getItem('qp_token');
       const response = await fetch(`${API_BASE}/api/auth/change-password`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(currentToken ? { 'Authorization': `Bearer ${currentToken}` } : {})
+        },
         body: JSON.stringify({ token: currentToken, new_password: newPassword }),
       });
       const data = await response.json();
@@ -49,7 +52,8 @@ export default function Profile() {
 
   if (!userData) return <div className="flex items-center justify-center h-screen"><div className="spinner"></div></div>;
 
-  const displayRole = (userData?.role || (isAdmin ? 'admin' : 'user')).toUpperCase();
+  const normalizedRole = userData?.role === 'advisor' ? 'staff' : userData?.role;
+  const displayRole = (normalizedRole || (isAdmin ? 'admin' : 'user')).toUpperCase();
 
   return (
     <div className="fade-in" style={{ padding: '2rem', maxWidth: '1000px', margin: '0 auto' }}>
@@ -109,7 +113,7 @@ export default function Profile() {
           </div>
           
           <div>
-            <h1 style={{ fontSize: '2.5rem', fontWeight: '800', margin: 0, color: 'white' }}>{userData.Name}</h1>
+            <h1 style={{ fontSize: '2.5rem', fontWeight: '800', margin: 0, color: 'white' }}>{userData.name || userData.Name}</h1>
             <div style={{ display: 'flex', gap: '1rem', marginTop: '0.5rem' }}>
               <span style={{ 
                 background: 'rgba(255,255,255,0.2)', 
@@ -129,7 +133,7 @@ export default function Profile() {
                 fontWeight: '600',
                 backdropFilter: 'blur(5px)'
               }}>
-                {userData.Dept || 'Admin'}
+                {userData.department || userData.Dept || 'Administration'}
               </span>
             </div>
           </div>
@@ -161,7 +165,9 @@ export default function Profile() {
                 </div>
                 <div>
                   <p style={{ margin: 0, fontSize: '0.75rem', color: 'var(--secondary-400)', fontWeight: '700', textTransform: 'uppercase' }}>Security Level</p>
-                  <p style={{ margin: 0, fontWeight: '600', color: 'var(--secondary-800)' }}>{isAdmin ? 'Full Administrator Access' : 'Standard Faculty Access'}</p>
+                  <p style={{ margin: 0, fontWeight: '600', color: 'var(--secondary-800)' }}>
+                    {isAdmin ? 'Full Administrator Access' : normalizedRole === 'hod' ? 'Department Head Access' : 'Standard Faculty Access'}
+                  </p>
                 </div>
               </div>
             </div>
