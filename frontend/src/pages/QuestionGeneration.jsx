@@ -812,7 +812,7 @@ const QuestionGeneration = () => {
               <option value="gemini">Gemini (Online)</option>
             </select>
           </div>
-          <div className="form-group">
+          {/* <div className="form-group">
             <label className="form-label">Questions from Images</label>
             <input
               className="form-input"
@@ -839,10 +839,7 @@ const QuestionGeneration = () => {
                 </label>
               ))}
             </div>
-            {/* <span style={{ fontSize: '0.7rem', color: 'var(--secondary-500)' }}>
-              AI analyzes each image and generates a question about it; the image is embedded in the paper.
-            </span> */}
-          </div>
+          </div> */}
           <div className="form-group" style={{ display: 'flex', alignItems: 'flex-end' }}>
             <button
               type="button"

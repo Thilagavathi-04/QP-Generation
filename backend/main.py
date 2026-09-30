@@ -398,11 +398,7 @@ def _subject_visible(user: dict, subject_row: dict, connection=None, access_ids:
         subject_dept = (subject_row.get("department") or "").strip().lower()
         user_dept = (user.get("department") or "").strip().lower()
         return bool(subject_dept) and bool(user_dept) and subject_dept == user_dept
-    subject_dept = (subject_row.get("department") or "").strip().lower()
-    user_dept = (user.get("department") or "").strip().lower()
-    if subject_dept and user_dept and subject_dept == user_dept:
-        return True
-    # staff: explicit assignments are allowed across departments
+    # staff: explicit assignments only
     if access_ids is not None:
         return subject_row.get("id") in access_ids
     if not connection:
