@@ -7,14 +7,17 @@ import Modal from '../components/Modal'
 import { useAuth } from '../context/useAuth'
 
 const SubjectManagement = () => {
-  const { isAdmin, isHod } = useAuth()
-  const canManageSubjects = isAdmin
+  const { isAdmin, isHod, userData } = useAuth()
+  const canCreateSubjects = isAdmin || isHod
+  const canDeleteSubjects = isAdmin
   const canUploadCourseOutcome = isAdmin || isHod
   const [subjects, setSubjects] = useState([])
+  const [assignableUsers, setAssignableUsers] = useState([])
   const [loading, setLoading] = useState(true)
   const [showCreateForm, setShowCreateForm] = useState(false)
   const [uploadingCourseOutcomeFor, setUploadingCourseOutcomeFor] = useState(null)
   const [modalState, setModalState] = useState({ isOpen: false, type: '', data: null })
+  const [selectedUserIds, setSelectedUserIds] = useState([])
   const [formData, setFormData] = useState({
     subjectId: '',
     name: '',
@@ -28,7 +31,24 @@ const SubjectManagement = () => {
   // Fetch subjects on component mount
   useEffect(() => {
     fetchSubjects()
-  }, [])
+    if (canCreateSubjects) {
+      fetchAssignableUsers()
+    }
+  }, [canCreateSubjects])
+
+  const fetchAssignableUsers = async () => {
+    try {
+      const response = await api.get('/api/admin/users')
+      const users = Array.isArray(response.data) ? response.data : []
+      setAssignableUsers(users.filter(user => {
+        const role = (user.role || '').toLowerCase()
+        return role !== 'admin'
+      }))
+    } catch (error) {
+      console.error('Error loading assignable users:', error)
+      showToast('Failed to load staff list for subject mapping', 'error')
+    }
+  }
 
   const fetchSubjects = async () => {
     try {
@@ -64,8 +84,9 @@ const SubjectManagement = () => {
       const formDataToSend = new FormData()
       formDataToSend.append('subject_id', formData.subjectId)
       formDataToSend.append('name', formData.name)
-      formDataToSend.append('department', formData.department || '')
+      formDataToSend.append('department', isHod ? (userData?.department || '') : formData.department || '')
       formDataToSend.append('use_book_for_generation', formData.useBookForGeneration)
+      formDataToSend.append('assigned_user_ids', JSON.stringify(selectedUserIds))
 
       if (formData.syllabusFile) {
         formDataToSend.append('syllabus_file', formData.syllabusFile)
@@ -95,6 +116,7 @@ const SubjectManagement = () => {
         courseOutcomeFile: null,
         useBookForGeneration: false
       })
+      setSelectedUserIds([])
       setShowCreateForm(false)
 
       // Refresh subjects list
@@ -184,9 +206,16 @@ const SubjectManagement = () => {
               Create and manage subjects with syllabus and reference materials
             </p>
           </div>
-          {canManageSubjects && (
+          {canCreateSubjects && (
             <button
-              onClick={() => setShowCreateForm(!showCreateForm)}
+              onClick={() => {
+                if (showCreateForm) {
+                  setShowCreateForm(false)
+                  setSelectedUserIds([])
+                } else {
+                  setShowCreateForm(true)
+                }
+              }}
               className="btn"
               style={{
                 background: 'white',
@@ -223,10 +252,10 @@ const SubjectManagement = () => {
                 <label className="form-label">Subject ID *</label>
                 <input
                   type="text"
+                  placeholder="e.g., CS101, MATH201"
                   className="form-input"
                   value={formData.subjectId}
                   onChange={(e) => setFormData(prev => ({ ...prev, subjectId: e.target.value }))}
-                  placeholder="e.g., CS101, MATH201"
                   required
                 />
               </div>
@@ -247,10 +276,83 @@ const SubjectManagement = () => {
               <input
                 type="text"
                 className="form-input"
-                value={formData.department}
+                value={isHod ? (userData?.department || '') : formData.department}
                 onChange={(e) => setFormData(prev => ({ ...prev, department: e.target.value }))}
                 placeholder="e.g. AIML, CSE (used for HOD access)"
+                disabled={isHod}
               />
+            </div>
+
+            <div className="form-group" style={{ marginBottom: '1.5rem' }}>
+              <label className="form-label">Map Users / Staff</label>
+              <div style={{
+                border: '1px solid var(--secondary-200)',
+                borderRadius: '12px',
+                padding: '0.75rem',
+                background: 'var(--secondary-50)',
+                maxHeight: '240px',
+                overflowY: 'auto',
+                display: 'grid',
+                gap: '0.5rem'
+              }}>
+                {assignableUsers.length === 0 ? (
+                  <div style={{ color: 'var(--secondary-500)', fontSize: '0.9rem' }}>
+                    No staff available for mapping.
+                  </div>
+                ) : (
+                  assignableUsers.map(user => {
+                    const userRole = (user.role || '').toLowerCase() === 'hod' ? 'HOD' : 'Staff'
+                    const isChecked = selectedUserIds.includes(user.id)
+                    return (
+                      <label
+                        key={user.id}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          gap: '0.75rem',
+                          padding: '0.65rem 0.75rem',
+                          borderRadius: '10px',
+                          background: 'white',
+                          border: '1px solid var(--secondary-200)',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        <span style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                          <input
+                            type="checkbox"
+                            checked={isChecked}
+                            disabled={user.id === userData?.id}
+                            onChange={(e) => {
+                              setSelectedUserIds(prev => e.target.checked
+                                ? [...prev, user.id]
+                                : prev.filter(id => id !== user.id)
+                              )
+                            }}
+                          />
+                          <span>
+                            <strong style={{ color: 'var(--secondary-800)' }}>{user.name}</strong>
+                            <span style={{ display: 'block', fontSize: '0.85rem', color: 'var(--secondary-500)' }}>{user.email}</span>
+                          </span>
+                        </span>
+                        <span style={{
+                          fontSize: '0.75rem',
+                          fontWeight: '700',
+                          padding: '0.25rem 0.6rem',
+                          borderRadius: '999px',
+                          background: userRole === 'HOD' ? 'var(--blue-100, #dbeafe)' : 'var(--primary-100)',
+                          color: userRole === 'HOD' ? 'var(--blue-700, #1d4ed8)' : 'var(--primary-700)'
+                        }}>
+                          {userRole}
+                        </span>
+                      </label>
+                    )
+                  })
+                )}
+              </div>
+              <p style={{ marginTop: '0.5rem', fontSize: '0.85rem', color: 'var(--secondary-500)' }}>
+                HOD-created subjects are automatically available to staff in the same department. Selected users get explicit access too.
+              </p>
             </div>
 
             <div className="form-row">
@@ -346,7 +448,10 @@ const SubjectManagement = () => {
               <button type="submit" className="btn btn-primary">Create Subject</button>
               <button
                 type="button"
-                onClick={() => setShowCreateForm(false)}
+                onClick={() => {
+                  setShowCreateForm(false)
+                  setSelectedUserIds([])
+                }}
                 className="btn btn-secondary"
               >
                 Cancel
@@ -388,7 +493,7 @@ const SubjectManagement = () => {
           <p style={{ color: '#64748b', marginBottom: '2rem' }}>
             Start by creating your first subject with syllabus upload
           </p>
-          {canManageSubjects && (
+          {canCreateSubjects && (
             <button
               onClick={() => setShowCreateForm(true)}
               className="btn btn-primary"
@@ -570,7 +675,7 @@ const SubjectManagement = () => {
                   <Database size={16} />
                   Bank
                 </Link>
-                {canManageSubjects && (
+                {canDeleteSubjects && (
                   <button
                     onClick={() => handleDelete(subject.id)}
                     className="btn btn-danger"

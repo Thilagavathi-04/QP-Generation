@@ -69,7 +69,7 @@ const Sidebar = ({ open, onClose }) => {
         navGroups.push({
             title: 'System',
             items: [
-                { path: '/admin', label: 'Admin dashboard', icon: Shield },
+                { path: '/admin', label: isHod ? 'Staff dashboard' : 'Admin dashboard', icon: Shield },
                 { path: '/add-profile', label: isAdmin ? 'Manage faculty' : 'Add staff', icon: Settings }
             ]
         })

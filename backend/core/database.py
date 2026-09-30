@@ -316,6 +316,18 @@ def init_database():
             )
         """)
 
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS subject_access (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                subject_id INT NOT NULL,
+                user_id INT NOT NULL,
+                granted_by INT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE KEY unique_subject_user (subject_id, user_id),
+                FOREIGN KEY (subject_id) REFERENCES subjects(id) ON DELETE CASCADE
+            )
+        """)
+
         # Create units table
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS units (

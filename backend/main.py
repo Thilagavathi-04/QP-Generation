@@ -377,7 +377,19 @@ def _assigned_subject_keys(user: dict) -> set:
     return keys
 
 
-def _subject_visible(user: dict, subject_row: dict) -> bool:
+def _subject_access_ids(connection, user_id: int) -> set:
+    cursor = get_cursor(connection)
+    placeholder = get_placeholder()
+    cursor.execute(
+        f"SELECT subject_id FROM subject_access WHERE user_id = {placeholder}",
+        (user_id,)
+    )
+    rows = cursor.fetchall()
+    cursor.close()
+    return {row["subject_id"] for row in rows}
+
+
+def _subject_visible(user: dict, subject_row: dict, connection=None, access_ids: Optional[set] = None) -> bool:
     """Check whether a subject row is within the user's scope."""
     role = user["role"]
     if role == "admin":
@@ -386,15 +398,29 @@ def _subject_visible(user: dict, subject_row: dict) -> bool:
         subject_dept = (subject_row.get("department") or "").strip().lower()
         user_dept = (user.get("department") or "").strip().lower()
         return bool(subject_dept) and bool(user_dept) and subject_dept == user_dept
-    # staff: only assigned subjects
-    keys = _assigned_subject_keys(user)
-    name = (subject_row.get("name") or "").strip().lower()
-    code = (subject_row.get("subject_id") or "").strip().lower()
-    return name in keys or code in keys
+    subject_dept = (subject_row.get("department") or "").strip().lower()
+    user_dept = (user.get("department") or "").strip().lower()
+    if subject_dept and user_dept and subject_dept == user_dept:
+        return True
+    # staff: explicit assignments are allowed across departments
+    if access_ids is not None:
+        return subject_row.get("id") in access_ids
+    if not connection:
+        return False
+    # fall back to checking the access map directly with connection
+    cursor = get_cursor(connection)
+    placeholder = get_placeholder()
+    cursor.execute(
+        f"SELECT 1 FROM subject_access WHERE subject_id = {placeholder} AND user_id = {placeholder} LIMIT 1",
+        (subject_row.get("id"), user["id"])
+    )
+    row = cursor.fetchone()
+    cursor.close()
+    return bool(row)
 
 
-def _assert_subject_access(user: dict, subject_row: dict) -> None:
-    if not _subject_visible(user, subject_row):
+def _assert_subject_access(user: dict, subject_row: dict, connection=None, access_ids: Optional[set] = None) -> None:
+    if not _subject_visible(user, subject_row, connection=connection, access_ids=access_ids):
         raise HTTPException(status_code=403, detail="You do not have access to this subject")
 
 
@@ -404,7 +430,8 @@ def _visible_subject_rows(connection, user: dict) -> list:
     cursor.execute("SELECT id, subject_id, name, department FROM subjects")
     rows = [dict(r) for r in cursor.fetchall()]
     cursor.close()
-    return rows if user["role"] == "admin" else [r for r in rows if _subject_visible(user, r)]
+    access_ids = _subject_access_ids(connection, user["id"]) if user["role"] == "staff" else None
+    return rows if user["role"] == "admin" else [r for r in rows if _subject_visible(user, r, connection=connection, access_ids=access_ids)]
 
 
 def _allowed_subject_ids(connection, user: dict) -> Optional[set]:
@@ -430,7 +457,7 @@ def _fetch_subject_row(connection, subject_id: int) -> dict:
 
 def _assert_subject_id_access(connection, user: dict, subject_id: int) -> dict:
     subject_row = _fetch_subject_row(connection, subject_id)
-    _assert_subject_access(user, subject_row)
+    _assert_subject_access(user, subject_row, connection=connection)
     return subject_row
 
 
@@ -446,7 +473,7 @@ def _assert_paper_access(connection, user: dict, paper_id: int) -> None:
     if not row:
         raise HTTPException(status_code=404, detail="Question paper not found")
     subject_row = _fetch_subject_row(connection, row["subject_id"])
-    _assert_subject_access(user, subject_row)
+    _assert_subject_access(user, subject_row, connection=connection)
 
 
 def _assert_job_access(request: Request, job_id: str) -> dict:
@@ -832,10 +859,11 @@ def create_subject(
     book_file: Optional[UploadFile] = File(None),
     course_outcome_file: Optional[UploadFile] = File(None),
     use_book_for_generation: bool = Form(False),
-    department: Optional[str] = Form(None)
+    department: Optional[str] = Form(None),
+    assigned_user_ids: Optional[str] = Form(None)
 ):
-    """Create a new subject with file uploads (admin only)"""
-    _require_roles(request, "admin")
+    """Create a new subject with file uploads (admin or HOD)."""
+    actor = _require_roles(request, "admin", "hod")
     connection = get_db_connection()
     if not connection:
         raise HTTPException(status_code=500, detail="Database connection failed")
@@ -848,6 +876,21 @@ def create_subject(
         existing = cursor.fetchone()
         if existing:
             raise HTTPException(status_code=400, detail="Subject with this ID or name already exists")
+
+        resolved_department = (department or "").strip() or None
+        if actor["role"] == "hod":
+            resolved_department = (actor.get("department") or "").strip() or None
+        if not resolved_department and actor["role"] == "hod":
+            raise HTTPException(status_code=400, detail="HOD subjects must belong to a department")
+
+        selected_user_ids = []
+        if assigned_user_ids:
+            try:
+                raw_ids = json.loads(assigned_user_ids)
+                if isinstance(raw_ids, list):
+                    selected_user_ids = [int(uid) for uid in raw_ids if str(uid).strip().isdigit()]
+            except Exception:
+                selected_user_ids = []
         
         safe_subject_id = "".join(c if c.isalnum() or c in "-_" else "_" for c in subject_id)
         
@@ -900,10 +943,34 @@ def create_subject(
             INSERT INTO subjects (subject_id, name, syllabus_file, book_file, course_outcome_file, use_book_for_generation, department)
             VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})
         """
-        cursor.execute(query, (subject_id, name, syllabus_path, book_path, course_outcome_path, use_book_for_generation, (department or "").strip() or None))
+        cursor.execute(query, (subject_id, name, syllabus_path, book_path, course_outcome_path, use_book_for_generation, resolved_department))
         connection.commit()
         
         subject_db_id = cursor.lastrowid
+
+        if selected_user_ids:
+            placeholder_list = ", ".join([get_placeholder()] * len(selected_user_ids))
+            cursor.execute(
+                f"SELECT id, department, role FROM users WHERE id IN ({placeholder_list})",
+                tuple(selected_user_ids)
+            )
+            eligible_users = []
+            for user_row in cursor.fetchall():
+                user_department = (user_row.get("department") or "").strip().lower()
+                subject_department = (resolved_department or "").strip().lower()
+                if actor["role"] == "hod":
+                    if not subject_department or user_department != subject_department:
+                        raise HTTPException(status_code=403, detail="HOD can only map users from their department")
+                if user_row.get("role") == "admin":
+                    continue
+                eligible_users.append(user_row["id"])
+
+            for user_id in eligible_users:
+                cursor.execute(
+                    f"INSERT IGNORE INTO subject_access (subject_id, user_id, granted_by) VALUES ({placeholder}, {placeholder}, {placeholder})",
+                    (subject_db_id, user_id, actor["id"])
+                )
+            connection.commit()
         
         if syllabus_path and syllabus_path.lower().endswith('.pdf'):
             try:
@@ -946,7 +1013,7 @@ def get_subjects(request: Request):
         cursor.close()
         connection.close()
         
-        visible = [dict(s) for s in subjects if _subject_visible(user, dict(s))]
+        visible = [dict(s) for s in subjects if _subject_visible(user, dict(s), connection=connection)]
         return visible
     except Exception as e:
         if connection:
@@ -973,7 +1040,7 @@ def get_subject(subject_id: int, request: Request):
         if not subject:
             raise HTTPException(status_code=404, detail="Subject not found")
         
-        _assert_subject_access(user, dict(subject))
+        _assert_subject_access(user, dict(subject), connection=connection)
         return dict(subject)
     except HTTPException:
         raise
@@ -1003,7 +1070,7 @@ def upload_subject_course_outcome(
         subject = cursor.fetchone()
         if not subject:
             raise HTTPException(status_code=404, detail="Subject not found")
-        _assert_subject_access(actor, dict(subject))
+        _assert_subject_access(actor, dict(subject), connection=connection)
 
         if not course_outcome_file or not course_outcome_file.filename:
             raise HTTPException(status_code=400, detail="Course outcome file is required")
@@ -1066,7 +1133,7 @@ def download_subject_course_outcome(subject_id: int, request: Request):
         if not subject:
             raise HTTPException(status_code=404, detail="Subject not found")
 
-        _assert_subject_access(user, dict(subject))
+        _assert_subject_access(user, dict(subject), connection=connection)
 
         course_outcome_file = subject.get("course_outcome_file")
         if not course_outcome_file or not os.path.exists(course_outcome_file):
@@ -1110,7 +1177,7 @@ def update_subject(subject_id: int, subject: SubjectUpdate, request: Request):
         existing = cursor.fetchone()
         if not existing:
             raise HTTPException(status_code=404, detail="Subject not found")
-        _assert_subject_access(actor, dict(existing))
+        _assert_subject_access(actor, dict(existing), connection=connection)
         
         update_fields = []
         values = []
@@ -1175,7 +1242,7 @@ def get_subject_syllabus(subject_id: int, http_request: Request):
         if not subject:
             raise HTTPException(status_code=404, detail="Subject not found")
         
-        _assert_subject_access(user, dict(subject))
+        _assert_subject_access(user, dict(subject), connection=connection)
         
         cursor.execute(f"""
             SELECT * FROM units 
@@ -1246,7 +1313,7 @@ def get_subject_units(subject_id: int, http_request: Request):
         if not subject:
             raise HTTPException(status_code=404, detail="Subject not found")
         
-        _assert_subject_access(user, dict(subject))
+        _assert_subject_access(user, dict(subject), connection=connection)
         
         cursor.execute(f"""
             SELECT id, unit_number, unit_title 
@@ -1291,7 +1358,7 @@ def get_subject_topics(subject_id: int, http_request: Request, from_unit: Option
         subject = cursor.fetchone()
         if not subject:
             raise HTTPException(status_code=404, detail="Subject not found")
-        _assert_subject_access(user, dict(subject))
+        _assert_subject_access(user, dict(subject), connection=connection)
         
         # Base topics
         if from_unit is not None and to_unit is not None:
@@ -3665,7 +3732,7 @@ def generate_question_paper_from_data(request: dict, http_request: Request):
         subject = cursor.fetchone()
         if not subject:
             raise HTTPException(status_code=404, detail="Subject not found")
-        _assert_subject_access(user, dict(subject))
+        _assert_subject_access(user, dict(subject), connection=connection)
 
         course_outcome_file = None
         try:
