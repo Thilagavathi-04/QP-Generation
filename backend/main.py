@@ -743,6 +743,10 @@ def get_all_users(request: Request):
             ud = dict(u)
             ud["role"] = _normalize_role(ud.get("role"))
             ud["courses"] = json.loads(ud["courses"]) if ud.get("courses") else []
+            if ud["id"] == actor["id"]:
+                continue
+            if actor["role"] == "hod" and ud["role"] == "admin":
+                continue
             user_list.append(ud)
         cursor.close()
         connection.close()

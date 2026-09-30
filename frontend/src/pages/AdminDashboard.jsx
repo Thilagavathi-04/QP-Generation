@@ -18,7 +18,7 @@ const AdminDashboard = () => {
     const [users, setUsers] = useState([]);
     const [isLoading, setIsLoading] = useState(true);
     const [searchTerm, setSearchTerm] = useState('');
-    const [roleDrafts, setRoleDrafts] = useState({});
+    const [openRoleMenuUserId, setOpenRoleMenuUserId] = useState(null);
     const [pendingRoleChange, setPendingRoleChange] = useState(null);
 
     // Fetch users on mount
@@ -65,13 +65,17 @@ const AdminDashboard = () => {
         }
     };
 
-    const handleRoleChange = async (userId) => {
-        const selectedRole = roleDrafts[userId];
+    const handleRoleMenuToggle = (userId) => {
+        setOpenRoleMenuUserId(prev => (prev === userId ? null : userId));
+    };
+
+    const handleRoleSelect = (userId, selectedRole) => {
         const currentUser = users.find(user => user.id === userId);
         const currentRole = normalizeRole(currentUser?.role);
 
         if (!selectedRole || selectedRole === currentRole) return;
 
+        setOpenRoleMenuUserId(null);
         setPendingRoleChange({
             userId,
             role: selectedRole,
@@ -93,11 +97,6 @@ const AdminDashboard = () => {
             setUsers(prevUsers => prevUsers.map(user => (
                 user.id === userId ? { ...user, role } : user
             )));
-            setRoleDrafts(prev => {
-                const next = { ...prev };
-                delete next[userId];
-                return next;
-            });
             setPendingRoleChange(null);
         } catch (error) {
             console.error('Error updating role:', error);
@@ -207,29 +206,6 @@ const AdminDashboard = () => {
                                             <span className={`status-badge ${getRoleColor(user.role)}`}>
                                                 {normalizeRole(user.role)}
                                             </span>
-                                            {isAdmin && user.id !== userData?.id && normalizeRole(user.role) !== 'admin' && (
-                                                <div className="role-controls">
-                                                    <select
-                                                        className="role-select"
-                                                        value={roleDrafts[user.id] || normalizeRole(user.role)}
-                                                        onChange={(e) => setRoleDrafts(prev => ({
-                                                            ...prev,
-                                                            [user.id]: e.target.value
-                                                        }))}
-                                                    >
-                                                        <option value="staff">staff</option>
-                                                        <option value="hod">hod</option>
-                                                    </select>
-                                                    <button
-                                                        type="button"
-                                                        className="action-btn role"
-                                                        onClick={() => handleRoleChange(user.id)}
-                                                        disabled={(roleDrafts[user.id] || normalizeRole(user.role)) === normalizeRole(user.role)}
-                                                    >
-                                                        Update Role
-                                                    </button>
-                                                </div>
-                                            )}
                                         </div>
                                     </td>
                                     <td>
@@ -258,6 +234,28 @@ const AdminDashboard = () => {
                                                     >
                                                         <XCircle size={18} /> Reject
                                                     </button>
+                                                )}
+                                                {isAdmin && normalizeRole(user.role) !== 'admin' && (
+                                                    <div className="role-menu-wrap">
+                                                        <button
+                                                            type="button"
+                                                            className="action-btn role"
+                                                            onClick={() => handleRoleMenuToggle(user.id)}
+                                                            title="Change role"
+                                                        >
+                                                            Update Role
+                                                        </button>
+                                                        {openRoleMenuUserId === user.id && (
+                                                            <div className="role-menu">
+                                                                <button type="button" className="role-menu-item" onClick={() => handleRoleSelect(user.id, 'staff')}>
+                                                                    Staff
+                                                                </button>
+                                                                <button type="button" className="role-menu-item" onClick={() => handleRoleSelect(user.id, 'hod')}>
+                                                                    HOD
+                                                                </button>
+                                                            </div>
+                                                        )}
+                                                    </div>
                                                 )}
                                             </>
                                         )}

@@ -159,33 +159,35 @@ export default function AdminProfile() {
 
             <hr style={{ margin: '1.5rem 0', border: 'none', borderTop: '1px solid var(--secondary-200)' }}/>
             
-            <div style={{ marginBottom: '1.5rem' }}>
-              <h4 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--primary-700)', marginBottom: '1rem' }}>
-                <BookOpen size={18} /> Assigned Courses
-              </h4>
-              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-end', marginBottom: '1rem' }}>
-                <div className="form-group" style={{ flex: 1, margin: 0 }}>
-                  <label className="form-label" style={{ fontSize: '0.8rem' }}>Regulation</label>
-                  <input type="text" className="form-input" value={currentRegulation} onChange={(e) => setCurrentRegulation(e.target.value)} placeholder="e.g. 2021"/>
+            {(isHod || facultyRole === 'staff') && (
+              <div style={{ marginBottom: '1.5rem' }}>
+                <h4 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--primary-700)', marginBottom: '1rem' }}>
+                  <BookOpen size={18} /> Assigned Courses
+                </h4>
+                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-end', marginBottom: '1rem' }}>
+                  <div className="form-group" style={{ flex: 1, margin: 0 }}>
+                    <label className="form-label" style={{ fontSize: '0.8rem' }}>Regulation</label>
+                    <input type="text" className="form-input" value={currentRegulation} onChange={(e) => setCurrentRegulation(e.target.value)} placeholder="e.g. 2021"/>
+                  </div>
+                  <div className="form-group" style={{ flex: 2, margin: 0 }}>
+                    <label className="form-label" style={{ fontSize: '0.8rem' }}>Subject Code/Name</label>
+                    <input type="text" className="form-input" value={currentSubject} onChange={(e) => setCurrentSubject(e.target.value)} placeholder="e.g. DL"/>
+                  </div>
+                  <button type="button" onClick={handleAddCourse} disabled={!currentRegulation || !currentSubject} className="btn btn-secondary" style={{ padding: '0.625rem 1rem' }}>Add</button>
                 </div>
-                <div className="form-group" style={{ flex: 2, margin: 0 }}>
-                  <label className="form-label" style={{ fontSize: '0.8rem' }}>Subject Code/Name</label>
-                  <input type="text" className="form-input" value={currentSubject} onChange={(e) => setCurrentSubject(e.target.value)} placeholder="e.g. DL"/>
-                </div>
-                <button type="button" onClick={handleAddCourse} disabled={!currentRegulation || !currentSubject} className="btn btn-secondary" style={{ padding: '0.625rem 1rem' }}>Add</button>
+
+                {courses.length > 0 && (
+                  <div style={{ padding: '1rem', background: 'var(--primary-50)', borderRadius: '8px', border: '1px solid var(--primary-200)', maxHeight: '220px', overflowY: 'auto' }}>
+                    {courses.map((course, idx) => (
+                      <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', padding: '0.5rem 0', borderBottom: idx !== courses.length - 1 ? '1px solid var(--primary-200)' : 'none' }}>
+                        <span><strong>{course.regulation}</strong> - {course.subject}</span>
+                        <Trash size={16} color="var(--danger-500)" style={{ cursor: 'pointer' }} onClick={() => handleRemoveCourse(idx)} />
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
-              
-              {courses.length > 0 && (
-                <div style={{ padding: '1rem', background: 'var(--primary-50)', borderRadius: '8px', border: '1px solid var(--primary-200)' }}>
-                  {courses.map((course, idx) => (
-                    <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', padding: '0.5rem 0', borderBottom: idx !== courses.length - 1 ? '1px solid var(--primary-200)' : 'none' }}>
-                      <span><strong>{course.regulation}</strong> - {course.subject}</span>
-                      <Trash size={16} color="var(--danger-500)" style={{ cursor: 'pointer' }} onClick={() => handleRemoveCourse(idx)} />
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
+            )}
 
             <button type="submit" disabled={loading} className="btn btn-primary" style={{ width: '100%' }}>
               {loading ? 'Adding User...' : (isAdmin ? 'Create Faculty Profile' : 'Create Staff Profile')}
@@ -199,7 +201,7 @@ export default function AdminProfile() {
             <User size={20} /> {isAdmin ? 'Registered Faculty' : 'Department Staff'}
           </h3>
           
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', maxHeight: '620px', overflowY: 'auto', paddingRight: '0.25rem' }}>
             {users.length === 0 ? (
               <p style={{ color: 'var(--secondary-500)', fontStyle: 'italic' }}>No faculty profiles found.</p>
             ) : (
