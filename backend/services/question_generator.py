@@ -98,45 +98,117 @@ def deduplicate_questions(
     return [questions[idx] for idx in kept_indices]
 
 
+def _find_json_candidate(text: str) -> Optional[str]:
+    stack: List[str] = []
+    in_string = False
+    escaped = False
+    start_index: Optional[int] = None
+
+    for index, char in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+
+        if char == '"':
+            in_string = True
+            continue
+
+        if char in "[{":
+            if not stack:
+                start_index = index
+            stack.append(char)
+            continue
+
+        if char in "]}":
+            if not stack:
+                continue
+            opener = stack.pop()
+            if (opener == "{" and char == "}") or (opener == "[" and char == "]"):
+                if not stack:
+                    return text[start_index:index + 1]
+
+    return None
+
+
+def _normalize_extracted_payload(parsed: Any) -> Dict[str, Any]:
+    if isinstance(parsed, dict):
+        if "questions" in parsed and isinstance(parsed["questions"], list):
+            return parsed
+        if "content" in parsed:
+            return {"questions": [parsed]}
+        for value in parsed.values():
+            if isinstance(value, list) and all(isinstance(item, dict) for item in value):
+                return {"questions": value}
+        return parsed
+
+    if isinstance(parsed, list):
+        if all(isinstance(item, dict) for item in parsed):
+            return {"questions": parsed}
+        if parsed and all(isinstance(item, dict) for item in parsed):
+            return {"questions": parsed}
+
+    raise ValueError("Model response did not contain a valid JSON object or question list")
+
+
 def _extract_json_payload(raw_text: str) -> Dict[str, Any]:
     text = (raw_text or "").strip()
+
+    if not text:
+        raise ValueError("Model response did not contain a valid JSON object or question list")
 
     if text.startswith("```"):
         text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
         text = re.sub(r"\s*```$", "", text).strip()
 
-    try:
-        parsed = json.loads(text)
-        if isinstance(parsed, dict):
-            return parsed
-    except Exception:
-        pass
-
-    first = text.find("{")
-    last = text.rfind("}")
-    if first != -1 and last != -1 and last > first:
-        candidate = text[first:last + 1]
+    candidates: List[str] = []
+    if text:
         try:
-            parsed = json.loads(candidate)
-            if isinstance(parsed, dict):
-                return parsed
+            parsed = json.loads(text)
+            return _normalize_extracted_payload(parsed)
         except Exception:
             pass
 
-    # Robust Fallback for Truncated/Malformed JSON:
-    # Find all question object patterns {"content": ...} inside raw text
-    object_matches = re.findall(r'\{[^{}]*?"content"\s*:[^{}]*?\}', text, flags=re.DOTALL)
-    extracted_questions = []
-    for obj_str in object_matches:
+        candidate = _find_json_candidate(text)
+        if candidate:
+            candidates.append(candidate)
+
+        # Fall back to brace-based extraction when the model emits prose before/after JSON.
+        for match in re.finditer(r"(?:\{|\[)", text):
+            start = match.start()
+            end = text.rfind(("]" if text[start] == "[" else "}"), start)
+            if end > start:
+                candidate = text[start:end + 1]
+                if candidate not in candidates:
+                    candidates.append(candidate)
+
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+            return _normalize_extracted_payload(parsed)
+        except Exception:
+            continue
+
+    for obj_str in re.findall(r'\{[^{}]*?"content"\s*:[^{}]*?\}', text, flags=re.DOTALL):
         try:
             q_obj = json.loads(obj_str)
             if isinstance(q_obj, dict) and "content" in q_obj:
-                extracted_questions.append(q_obj)
+                return {"questions": [q_obj]}
         except Exception:
             pass
 
-    if extracted_questions:
-        return {"questions": extracted_questions}
+    list_matches = re.findall(r'\[[\s\S]*?\]', text)
+    for candidate in list_matches:
+        try:
+            parsed = json.loads(candidate)
+            if isinstance(parsed, list):
+                return _normalize_extracted_payload(parsed)
+        except Exception:
+            pass
 
     raise ValueError("Model response did not contain a valid JSON object or question list")
 
@@ -161,7 +233,7 @@ def _get_active_ollama_url() -> str:
     return url
 
 
-def _generate_with_ollama(prompt: str, timeout: int = 120, temperature: float = 0.5) -> Dict[str, Any]:
+def _generate_with_ollama(prompt: str, timeout: int = 120, temperature: float = 0.2) -> Dict[str, Any]:
     url = _get_active_ollama_url()
     payload = {
         "model": OLLAMA_MODEL_NAME,
@@ -170,9 +242,10 @@ def _generate_with_ollama(prompt: str, timeout: int = 120, temperature: float = 
         "format": "json",
         "keep_alive": "1h",
         "options": {
-            "num_predict": 4096,
+            "num_predict": 2048,
             "temperature": temperature,
-            "top_p": 0.9
+            "top_p": 0.8,
+            "stop": ["\n\nExplanation:", "\n\nReasoning:"]
         }
     }
 
@@ -181,7 +254,8 @@ def _generate_with_ollama(prompt: str, timeout: int = 120, temperature: float = 
         raise RuntimeError(f"Ollama API Error: {response.status_code}")
 
     body = response.json()
-    return _extract_json_payload(body.get("response", ""))
+    raw_text = (body.get("response") or body.get("thinking") or "").strip()
+    return _extract_json_payload(raw_text)
 
 
 def _generate_with_xai(prompt: str, timeout: int, temperature: float = 0.5) -> Dict[str, Any]:
@@ -443,31 +517,31 @@ def has_exactly_four_match_pairs(content: str) -> bool:
 
 def get_marks_instruction(marks):
     if marks <= 0.5:
-        return "Question Type: 'Fill in the blank', 'True/False', 'Multiple Choice Question (MCQ)', match the following."
+        return "Use short, direct recall or low-complexity conceptual questions. Keep answers brief and factual."
     elif marks <= 1:
-        return "Question Type: 'Fill in the blank', 'True/False', 'Multiple Choice Question (MCQ)', match the following."
+        return "Use short, direct recall or low-complexity conceptual questions. Keep answers brief and factual."
     elif marks <= 2:
-        return "Bloom's Level: Understand. Generate short answer questions with definition + brief explanation/purpose. Expected answer length: 2-4 lines. No detailed reasoning."
+        return "Focus on concise conceptual understanding with a brief explanation or purpose. Keep expected answers to 2-4 lines."
     elif marks <= 3:
-        return "Bloom's Level: Understand, Apply. Generate short descriptive questions with explanation + small example. Expected answer length: 4-6 lines."
+        return "Focus on understanding and simple application with a short explanation and one small example. Keep answers to 4-6 lines."
     elif marks <= 5:
-        return "Bloom's Level: Apply, Analyze. Generate descriptive questions with explanation + example + key points. Expected answer length: 6-10 lines. Can include small code/algorithm/comparison."
+        return "Focus on application and analysis with a clear explanation, one example, and key comparison points. Keep answers to 6-10 lines."
     elif marks <= 7:
-        return "Bloom's Level: Apply, Analyze. Generate moderately detailed questions with concept explanation + working + example. Expected answer length: 10-15 lines."
+        return "Focus on application and analysis with a step-by-step explanation and an example. Keep answers to 10-15 lines."
     elif marks <= 10:
-        return "Bloom's Level: Analyze. Generate detailed questions with in-depth explanation + diagrams/examples. Expected answer length: 15-20 lines. May include derivations/coding/multiple concepts."
+        return "Focus on analysis with deeper explanation, reasoning, and examples. Keep answers to 15-20 lines."
     elif marks <= 12:
-        return "Bloom's Level: Analyze, Evaluate. Generate long-answer questions with theory + problem-solving + structured explanation. Expected answer length: 20-25 lines. Use diagrams/flowcharts where applicable."
+        return "Focus on analysis and evaluation with structured reasoning and problem-solving. Keep answers to 20-25 lines."
     elif marks == 14:
-        return "Bloom's Level: Evaluate. Generate advanced long-answer questions with deep explanation + analysis + justification. Expected answer length: 25-30 lines."
+        return "Focus on evaluation with justification, trade-offs, and strong reasoning. Keep answers to 25-30 lines."
     elif marks <= 15:
-        return "Bloom's Level: Evaluate, Create. Generate comprehensive questions covering theory + example + application. Expected answer length: 30+ lines."
+        return "Focus on evaluation and creation with comparative reasoning and applied examples. Keep answers to 30+ lines."
     elif marks <= 18:
-        return "Bloom's Level: Create. Generate complex multi-part questions with case study/real-world scenario and combined concepts. Expected answer length: 35+ lines."
+        return "Focus on creation using real-world scenarios, multi-step reasoning, and integrated concepts. Keep answers to 35+ lines."
     elif marks <= 20:
-        return "Bloom's Level: Create (Mastery). Generate very advanced multi-step, multi-concept questions with case study + system design + analysis + justification. Expected answer length: 40+ lines."
+        return "Focus on advanced creation with a case study, design logic, and justification. Keep answers to 40+ lines."
     else:
-        return "Bloom's Level: Create (Mastery). Generate very advanced multi-step, multi-concept questions with case study + system design + analysis + justification. Expected answer length: 40+ lines."
+        return "Focus on advanced creation with a case study, design logic, and justification. Keep answers to 40+ lines."
 
 def get_blooms_level(marks):
     if marks <= 1:
@@ -544,8 +618,16 @@ def generate_questions_with_ollama(
     
     CHUNK_SIZE = 5
 
-    # Standardize topics list size so prompt stays concise
-    sample_topics = topics[:15] if len(topics) > 15 else topics
+    # Keep prompts compact and stable. Large topic lists cause Ollama reasoning drift and invalid JSON.
+    unique_topics = []
+    seen_topics = set()
+    for topic in topics:
+        clean_topic = str(topic).strip()
+        if not clean_topic or clean_topic in seen_topics:
+            continue
+        seen_topics.add(clean_topic)
+        unique_topics.append(clean_topic)
+    sample_topics = unique_topics[:12] if len(unique_topics) > 12 else unique_topics
 
     while len(all_questions) < count and attempt < max_attempts:
         if cancel_check and cancel_check():
@@ -599,51 +681,51 @@ def generate_questions_with_ollama(
             prompt = f"""
             You are a professional academic question paper generator.
 
-            Generate EXACTLY {sub_count} questions.
+            Task: Generate exactly {sub_count} questions.
 
-            STRICT CONSTRAINTS:
-            1. Topics: {', '.join(sample_topics)}
-            2. Difficulty: {difficulty}
-            3. Marks per question: {marks}
-            
-            {f"Use the following grounding context from textbooks/syllabus: {context[:1000]}" if context else ""}
+            Strictly use only these topics: {', '.join(sample_topics)}
+            Difficulty: {difficulty}
+            Marks per question: {marks}
+            Bloom level: {effective_blooms_level}
+            {f"Grounding context: {context[:800]}" if context else ""}
 
-            IMPORTANT RULES:
-            1. MARKS-BASED STRUCTURE:
+            REQUIRED OUTPUT FORMAT:
+            - Return ONLY raw JSON with no markdown, no code fences, no explanation, and no reasoning.
+            - Entire response must be valid JSON.
+            - Top-level object must be {{"questions": [ ... ]}}.
+            - Array length must be exactly {sub_count}.
+            - Each question object must contain only these keys:
+              "content", "marks", "difficulty", "topic", "unit"
+            - "content" must be a full question text.
+            - "marks" must be a number: {marks}
+            - "difficulty" must be "{difficulty}"
+            - "topic" must be a topic from the provided list.
+            - "unit" must be a unit number as a string.
+
+            Content rules:
             - {marks_instruction}
-
-            2. BLOOM'S TAXONOMY (VERY STRICT):
-            - Each question MUST follow Bloom's level: {effective_blooms_level}
             - {blooms_instruction}
+            - Do not include any text before or after the JSON.
+            - Do not include analysis, planning, or examples outside JSON.
 
-            OUTPUT REQUIREMENTS:
-            1. Return ONLY a valid JSON object.
-            2. The object MUST have a key named "questions" which is an array of exactly {sub_count} question objects.
-            3. Each question object must have:
-               - "content": (string) The full text of the question
-               - "marks": (float) {marks}
-               - "difficulty": (string) "{difficulty}"
-               - "topic": (string) one of the topics from the provided list
-               - "unit": (string) the unit number
-            
-            STRICT JSON STRUCTURE:
+            Example JSON:
             {{
               "questions": [
                 {{
-                  "content": "Distinct question?",
+                  "content": "Describe the main difference between ...",
                   "marks": {marks},
                   "difficulty": "{difficulty}",
-                  "topic": "...",
+                  "topic": "{sample_topics[0] if sample_topics else 'Topic'}",
                   "unit": "1"
                 }}
               ]
             }}
-          
+            """
+
         # --- END: DYNAMIC PROMPT SELECTION ---
 
         # Track the Bloom level used in the prompt for attaching to each question
 
-        """
         blooms_for_prompt: Optional[str] = None
         if marks > 1:
             blooms_for_prompt = effective_blooms_level

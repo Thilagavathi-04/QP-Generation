@@ -18,6 +18,8 @@ export const subjectAPI = {
   create: (data) => api.post('/api/subjects', data),
   update: (id, data) => api.put(`/api/subjects/${id}`, data),
   delete: (id) => api.delete(`/api/subjects/${id}`),
+  getUserDraft: (id) => api.get(`/api/subjects/${id}/user-draft`),
+  saveUserDraft: (id, draft_data) => api.post(`/api/subjects/${id}/user-draft`, { draft_data }),
 }
 
 // API endpoints for question generation
@@ -66,6 +68,15 @@ export const statsAPI = {
   getDashboard: () => api.get('/api/dashboard/stats'),
   getRecentActivity: () => api.get('/api/stats/recent-activity'),
 }
+
+
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem('qp_token');
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
 
 // Error handler
 api.interceptors.response.use(

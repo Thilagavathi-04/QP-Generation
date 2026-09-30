@@ -1157,7 +1157,7 @@ const QuestionPaperGeneration = () => {
         </div>
       </div>
 
-      <div className="card fade-in" style={{
+      {/* <div className="card fade-in" style={{
         animationDelay: '0.3s',
         borderLeft: '4px solid var(--primary-400)'
       }}>
@@ -1263,7 +1263,7 @@ const QuestionPaperGeneration = () => {
             )}
           </div>
         )}
-      </div>
+      </div> */}
 
       <div className="card" style={{ textAlign: 'center' }}>
         <button
