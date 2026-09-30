@@ -489,6 +489,11 @@ class AdminAction(BaseModel):
     action: str  # "approve" or "reject"
 
 
+class UpdateUserRole(BaseModel):
+    user_id: int
+    role: str
+
+
 @app.post("/api/auth/login", tags=["Auth"])
 def login(request: LoginRequest):
     """Authenticate user against quest_generator.db and return token + user info"""
@@ -758,6 +763,56 @@ def admin_action(action: AdminAction, request: Request):
         raise
     except Exception as e:
         if connection: connection.close()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/admin/update-role", tags=["Admin"])
+def update_user_role(payload: UpdateUserRole, request: Request):
+    """Allow admins to change a user's role between staff and hod."""
+    actor = _require_roles(request, "admin")
+    new_role = _normalize_role(payload.role)
+    if new_role not in {"staff", "hod"}:
+        raise HTTPException(status_code=400, detail="Role must be staff or hod")
+
+    connection = get_db_connection()
+    try:
+        cursor = get_cursor(connection)
+        placeholder = get_placeholder()
+
+        cursor.execute(
+            f"SELECT id, role, department FROM users WHERE id = {placeholder}",
+            (payload.user_id,)
+        )
+        target = cursor.fetchone()
+        if not target:
+            cursor.close()
+            connection.close()
+            raise HTTPException(status_code=404, detail="User not found")
+
+        if target["id"] == actor["id"]:
+            cursor.close()
+            connection.close()
+            raise HTTPException(status_code=400, detail="You cannot change your own role")
+
+        current_role = _normalize_role(target.get("role"))
+        if current_role == new_role:
+            cursor.close()
+            connection.close()
+            return {"success": True, "role": new_role, "message": "Role already set"}
+
+        cursor.execute(
+            f"UPDATE users SET role = {placeholder} WHERE id = {placeholder}",
+            (new_role, payload.user_id)
+        )
+        connection.commit()
+        cursor.close()
+        connection.close()
+        return {"success": True, "role": new_role}
+    except HTTPException:
+        raise
+    except Exception as e:
+        if connection:
+            connection.close()
         raise HTTPException(status_code=500, detail=str(e))
 
 

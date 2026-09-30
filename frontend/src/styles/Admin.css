@@ -117,6 +117,83 @@
     gap: 0.5rem;
 }
 
+.role-cell {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+}
+
+.role-controls {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.role-select {
+    min-width: 110px;
+    padding: 0.45rem 0.65rem;
+    border-radius: 6px;
+    border: 1px solid var(--secondary-200);
+    background: white;
+    color: var(--secondary-700);
+}
+
+.role-modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1rem;
+    z-index: 50;
+}
+
+.role-modal {
+    width: min(100%, 420px);
+    background: white;
+    border-radius: 16px;
+    padding: 1.5rem;
+    box-shadow: 0 24px 80px rgba(15, 23, 42, 0.2);
+    border: 1px solid var(--secondary-200);
+}
+
+.role-modal h2 {
+    margin: 0 0 0.75rem 0;
+    color: var(--secondary-900);
+    font-size: 1.2rem;
+}
+
+.role-modal p {
+    margin: 0 0 1.25rem 0;
+    color: var(--secondary-700);
+    line-height: 1.5;
+}
+
+.role-modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.75rem;
+}
+
+.action-btn.modal-cancel {
+    background-color: var(--secondary-200);
+    color: var(--secondary-800);
+}
+
+.action-btn.modal-cancel:hover {
+    background-color: var(--secondary-300);
+}
+
+.action-btn.modal-confirm {
+    background-color: var(--primary-600);
+}
+
+.action-btn.modal-confirm:hover {
+    background-color: var(--primary-700);
+}
+
 .action-btn {
     display: flex;
     align-items: center;
@@ -144,6 +221,19 @@
 
 .action-btn.reject:hover {
     background-color: var(--danger-600);
+}
+
+.action-btn.role {
+    background-color: var(--primary-600);
+}
+
+.action-btn.role:hover:not(:disabled) {
+    background-color: var(--primary-700);
+}
+
+.action-btn.role:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
 }
 
 .empty-state {

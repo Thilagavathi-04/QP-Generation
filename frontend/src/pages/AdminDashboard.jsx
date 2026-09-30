@@ -6,11 +6,20 @@ import { useAuth } from '../context/useAuth';
 
 const API_BASE = import.meta.env.VITE_API_URL || import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8010';
 
+const normalizeRole = (role) => {
+    const normalized = (role || '').toLowerCase();
+    if (normalized === 'advisor' || normalized === 'teacher') return 'staff';
+    if (normalized === 'admin' || normalized === 'hod' || normalized === 'staff') return normalized;
+    return 'staff';
+};
+
 const AdminDashboard = () => {
     const { isAdmin, userData } = useAuth();
     const [users, setUsers] = useState([]);
     const [isLoading, setIsLoading] = useState(true);
     const [searchTerm, setSearchTerm] = useState('');
+    const [roleDrafts, setRoleDrafts] = useState({});
+    const [pendingRoleChange, setPendingRoleChange] = useState(null);
 
     // Fetch users on mount
     const fetchUsers = async () => {
@@ -56,11 +65,63 @@ const AdminDashboard = () => {
         }
     };
 
+    const handleRoleChange = async (userId) => {
+        const selectedRole = roleDrafts[userId];
+        const currentUser = users.find(user => user.id === userId);
+        const currentRole = normalizeRole(currentUser?.role);
+
+        if (!selectedRole || selectedRole === currentRole) return;
+
+        setPendingRoleChange({
+            userId,
+            role: selectedRole,
+            userName: currentUser?.name || 'this user'
+        });
+    };
+
+    const confirmRoleChange = async () => {
+        if (!pendingRoleChange) return;
+
+        const { userId, role } = pendingRoleChange;
+
+        try {
+            await axios.post(`${API_BASE}/api/admin/update-role`, {
+                user_id: userId,
+                role
+            });
+
+            setUsers(prevUsers => prevUsers.map(user => (
+                user.id === userId ? { ...user, role } : user
+            )));
+            setRoleDrafts(prev => {
+                const next = { ...prev };
+                delete next[userId];
+                return next;
+            });
+            setPendingRoleChange(null);
+        } catch (error) {
+            console.error('Error updating role:', error);
+            alert(error.response?.data?.detail || 'Role update failed');
+        }
+    };
+
+    const cancelRoleChange = () => {
+        setPendingRoleChange(null);
+    };
+
     // Filter users
     const filteredUsers = users.filter(user =>
         user.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
         user.email.toLowerCase().includes(searchTerm.toLowerCase())
     );
+
+    const getRoleColor = (role) => {
+        switch (normalizeRole(role)) {
+            case 'admin': return 'bg-purple-100 text-purple-800';
+            case 'hod': return 'bg-blue-100 text-blue-800';
+            default: return 'bg-gray-100 text-gray-800';
+        }
+    };
 
     const getStatusColor = (status) => {
         switch (status) {
@@ -89,6 +150,32 @@ const AdminDashboard = () => {
                 </div>
             </div>
 
+            {pendingRoleChange && (
+                <div className="role-modal-backdrop" role="presentation" onClick={cancelRoleChange}>
+                    <div
+                        className="role-modal"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="role-modal-title"
+                        aria-describedby="role-modal-description"
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <h2 id="role-modal-title">Confirm role update</h2>
+                        <p id="role-modal-description">
+                            Change {pendingRoleChange.userName} to <strong>{pendingRoleChange.role.toUpperCase()}</strong>?
+                        </p>
+                        <div className="role-modal-actions">
+                            <button type="button" className="action-btn modal-cancel" onClick={cancelRoleChange}>
+                                Cancel
+                            </button>
+                            <button type="button" className="action-btn modal-confirm" onClick={confirmRoleChange}>
+                                Confirm
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             <div className="users-table-container">
                 {isLoading ? (
                     <div className="admin-loading">Loading users…</div>
@@ -98,6 +185,7 @@ const AdminDashboard = () => {
                             <tr>
                                 <th>User</th>
                                 <th>Email</th>
+                                <th>Role</th>
                                 <th>Status</th>
                                 <th>Joined</th>
                                 <th>Actions</th>
@@ -114,6 +202,36 @@ const AdminDashboard = () => {
                                         <span className="user-name">{user.name}</span>
                                     </td>
                                     <td>{user.email}</td>
+                                    <td>
+                                        <div className="role-cell">
+                                            <span className={`status-badge ${getRoleColor(user.role)}`}>
+                                                {normalizeRole(user.role)}
+                                            </span>
+                                            {isAdmin && user.id !== userData?.id && normalizeRole(user.role) !== 'admin' && (
+                                                <div className="role-controls">
+                                                    <select
+                                                        className="role-select"
+                                                        value={roleDrafts[user.id] || normalizeRole(user.role)}
+                                                        onChange={(e) => setRoleDrafts(prev => ({
+                                                            ...prev,
+                                                            [user.id]: e.target.value
+                                                        }))}
+                                                    >
+                                                        <option value="staff">staff</option>
+                                                        <option value="hod">hod</option>
+                                                    </select>
+                                                    <button
+                                                        type="button"
+                                                        className="action-btn role"
+                                                        onClick={() => handleRoleChange(user.id)}
+                                                        disabled={(roleDrafts[user.id] || normalizeRole(user.role)) === normalizeRole(user.role)}
+                                                    >
+                                                        Update Role
+                                                    </button>
+                                                </div>
+                                            )}
+                                        </div>
+                                    </td>
                                     <td>
                                         <span className={`status-badge ${getStatusColor(user.status)}`}>
                                             {user.status || 'pending'}
@@ -149,7 +267,7 @@ const AdminDashboard = () => {
                             ))}
                             {filteredUsers.length === 0 && (
                                 <tr>
-                                    <td colSpan="5" className="empty-state">No users found</td>
+                                    <td colSpan="6" className="empty-state">No users found</td>
                                 </tr>
                             )}
                         </tbody>
