@@ -65,7 +65,14 @@ import jwt
 
 JWT_SECRET = os.getenv('JWT_SECRET', 'super-secret-key-change-me-to-something-secure-for-production')
 JWT_ALGORITHM = 'HS256'
-ALLOWED_ORIGINS = os.getenv('ALLOWED_ORIGINS', 'http://localhost:5173,http://localhost:5174,http://localhost:3000').split(',')
+ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv(
+        'ALLOWED_ORIGINS',
+        'http://localhost:5173,http://localhost:5174,http://localhost:4173,http://localhost:3000,http://127.0.0.1:5173,http://127.0.0.1:5174,http://127.0.0.1:4173,http://127.0.0.1:3000'
+    ).split(',')
+    if origin.strip()
+]
 from pathlib import Path
 
 from email.message import EmailMessage
@@ -191,10 +198,11 @@ app = FastAPI(
     ],
 )
 
-# CORS middleware "*", 
+# CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
+    allow_origin_regex=r"^https?://.*",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

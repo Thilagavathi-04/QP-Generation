@@ -4,7 +4,7 @@ import { CheckCircle, XCircle, Trash2, Shield, Search } from 'lucide-react';
 import '../styles/Admin.css'; // We will create this next
 import { useAuth } from '../context/useAuth';
 
-const API_BASE = import.meta.env.VITE_API_URL || import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8010';
+const API_BASE = import.meta.env.VITE_API_URL || import.meta.env.VITE_API_BASE_URL || '';
 
 const normalizeRole = (role) => {
     const normalized = (role || '').toLowerCase();

@@ -4,7 +4,7 @@ import { BookOpen, Archive, TrendingUp, Database, Layout, Plus, ChevronRight } f
 import axios from 'axios'
 import { useAuth } from '../context/useAuth'
 
-const API_URL = import.meta.env.VITE_API_URL || import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8010'
+const API_URL = import.meta.env.VITE_API_URL || import.meta.env.VITE_API_BASE_URL || ''
 
 const Dashboard = () => {
   const { isAdmin } = useAuth()
