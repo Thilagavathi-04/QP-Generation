@@ -406,7 +406,10 @@ def _subject_visible(user: dict, subject_row: dict, connection=None, access_ids:
         subject_dept = (subject_row.get("department") or "").strip().lower()
         user_dept = (user.get("department") or "").strip().lower()
         return bool(subject_dept) and bool(user_dept) and subject_dept == user_dept
-    # staff: explicit assignments only
+    # staff: subjects they created, or those explicitly assigned to them
+    created_by = subject_row.get("created_by")
+    if created_by is not None and created_by == user["id"]:
+        return True
     if access_ids is not None:
         return subject_row.get("id") in access_ids
     if not connection:
@@ -431,7 +434,7 @@ def _assert_subject_access(user: dict, subject_row: dict, connection=None, acces
 def _visible_subject_rows(connection, user: dict) -> list:
     """All subject rows within the caller's scope (None-safe for admin)."""
     cursor = get_cursor(connection)
-    cursor.execute("SELECT id, subject_id, name, department FROM subjects")
+    cursor.execute("SELECT id, subject_id, name, department, created_by FROM subjects")
     rows = [dict(r) for r in cursor.fetchall()]
     cursor.close()
     access_ids = _subject_access_ids(connection, user["id"]) if user["role"] == "staff" else None
@@ -449,7 +452,7 @@ def _fetch_subject_row(connection, subject_id: int) -> dict:
     cursor = get_cursor(connection)
     placeholder = get_placeholder()
     cursor.execute(
-        f"SELECT id, subject_id, name, department FROM subjects WHERE id = {placeholder}",
+        f"SELECT id, subject_id, name, department, created_by FROM subjects WHERE id = {placeholder}",
         (subject_id,)
     )
     row = cursor.fetchone()
@@ -870,8 +873,8 @@ def create_subject(
     department: Optional[str] = Form(None),
     assigned_user_ids: Optional[str] = Form(None)
 ):
-    """Create a new subject with file uploads (admin or HOD)."""
-    actor = _require_roles(request, "admin", "hod")
+    """Create a new subject with file uploads (admin, HOD or staff)."""
+    actor = _require_roles(request, "admin", "hod", "staff")
     connection = get_db_connection()
     if not connection:
         raise HTTPException(status_code=500, detail="Database connection failed")
@@ -886,8 +889,8 @@ def create_subject(
             raise HTTPException(status_code=400, detail="Subject with this ID or name already exists")
 
         resolved_department = (department or "").strip() or None
-        if actor["role"] == "hod":
-            resolved_department = (actor.get("department") or "").strip() or None
+        if actor["role"] in ("hod", "staff"):
+            resolved_department = (actor.get("department") or "").strip() or resolved_department
         if not resolved_department and actor["role"] == "hod":
             raise HTTPException(status_code=400, detail="HOD subjects must belong to a department")
 
@@ -899,6 +902,9 @@ def create_subject(
                     selected_user_ids = [int(uid) for uid in raw_ids if str(uid).strip().isdigit()]
             except Exception:
                 selected_user_ids = []
+        # Staff-created subjects stay private to their creator, dept HOD and admin.
+        if actor["role"] == "staff":
+            selected_user_ids = []
         
         safe_subject_id = "".join(c if c.isalnum() or c in "-_" else "_" for c in subject_id)
         
@@ -948,10 +954,10 @@ def create_subject(
             course_outcome_path = str(course_outcome_path)
         
         query = f"""
-            INSERT INTO subjects (subject_id, name, syllabus_file, book_file, course_outcome_file, use_book_for_generation, department)
-            VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})
+            INSERT INTO subjects (subject_id, name, syllabus_file, book_file, course_outcome_file, use_book_for_generation, department, created_by)
+            VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})
         """
-        cursor.execute(query, (subject_id, name, syllabus_path, book_path, course_outcome_path, use_book_for_generation, resolved_department))
+        cursor.execute(query, (subject_id, name, syllabus_path, book_path, course_outcome_path, use_book_for_generation, resolved_department, actor["id"]))
         connection.commit()
         
         subject_db_id = cursor.lastrowid
@@ -1017,11 +1023,13 @@ def get_subjects(request: Request):
         cursor = get_cursor(connection)
         cursor.execute("SELECT * FROM subjects ORDER BY created_at DESC")
         subjects = cursor.fetchall()
-        
+
+        access_ids = _subject_access_ids(connection, user["id"]) if user["role"] == "staff" else None
+        visible = [dict(s) for s in subjects if _subject_visible(user, dict(s), connection=connection, access_ids=access_ids)]
+
         cursor.close()
         connection.close()
-        
-        visible = [dict(s) for s in subjects if _subject_visible(user, dict(s), connection=connection)]
+
         return visible
     except Exception as e:
         if connection:
@@ -1042,13 +1050,14 @@ def get_subject(subject_id: int, request: Request):
         cursor.execute(f"SELECT * FROM subjects WHERE id = {placeholder}", (subject_id,))
         subject = cursor.fetchone()
         
-        cursor.close()
-        connection.close()
-        
         if not subject:
+            cursor.close()
+            connection.close()
             raise HTTPException(status_code=404, detail="Subject not found")
         
         _assert_subject_access(user, dict(subject), connection=connection)
+        cursor.close()
+        connection.close()
         return dict(subject)
     except HTTPException:
         raise
@@ -1065,7 +1074,7 @@ def upload_subject_course_outcome(
     course_outcome_file: UploadFile = File(...)
 ):
     """Upload or replace course outcome file for an existing subject"""
-    actor = _require_roles(request, "admin", "hod")
+    actor = _require_roles(request, "admin", "hod", "staff")
     connection = get_db_connection()
     if not connection:
         raise HTTPException(status_code=500, detail="Database connection failed")
@@ -1074,7 +1083,7 @@ def upload_subject_course_outcome(
         cursor = get_cursor(connection)
         placeholder = get_placeholder()
 
-        cursor.execute(f"SELECT id, subject_id, department FROM subjects WHERE id = {placeholder}", (subject_id,))
+        cursor.execute(f"SELECT id, subject_id, department, created_by FROM subjects WHERE id = {placeholder}", (subject_id,))
         subject = cursor.fetchone()
         if not subject:
             raise HTTPException(status_code=404, detail="Subject not found")
@@ -1130,18 +1139,20 @@ def download_subject_course_outcome(subject_id: int, request: Request):
         cursor = get_cursor(connection)
         placeholder = get_placeholder()
         cursor.execute(
-            f"SELECT course_outcome_file, subject_id, name, department FROM subjects WHERE id = {placeholder}",
+            f"SELECT course_outcome_file, subject_id, name, department, created_by FROM subjects WHERE id = {placeholder}",
             (subject_id,),
         )
         subject = cursor.fetchone()
 
-        cursor.close()
-        connection.close()
-
         if not subject:
+            cursor.close()
+            connection.close()
             raise HTTPException(status_code=404, detail="Subject not found")
 
         _assert_subject_access(user, dict(subject), connection=connection)
+
+        cursor.close()
+        connection.close()
 
         course_outcome_file = subject.get("course_outcome_file")
         if not course_outcome_file or not os.path.exists(course_outcome_file):
@@ -1171,8 +1182,8 @@ def download_subject_course_outcome(subject_id: int, request: Request):
 
 @app.put("/api/subjects/{subject_id}", tags=["Subjects"], response_model=SubjectResponse)
 def update_subject(subject_id: int, subject: SubjectUpdate, request: Request):
-    """Update a subject (admin, or HOD of that subject's department)"""
-    actor = _require_roles(request, "admin", "hod")
+    """Update a subject (admin, HOD of that subject's department, or the staff creator)"""
+    actor = _require_roles(request, "admin", "hod", "staff")
     connection = get_db_connection()
     if not connection:
         raise HTTPException(status_code=500, detail="Database connection failed")
@@ -1181,7 +1192,7 @@ def update_subject(subject_id: int, subject: SubjectUpdate, request: Request):
         cursor = get_cursor(connection)
         placeholder = get_placeholder()
         
-        cursor.execute(f"SELECT id, subject_id, name, department FROM subjects WHERE id = {placeholder}", (subject_id,))
+        cursor.execute(f"SELECT id, subject_id, name, department, created_by FROM subjects WHERE id = {placeholder}", (subject_id,))
         existing = cursor.fetchone()
         if not existing:
             raise HTTPException(status_code=404, detail="Subject not found")
@@ -1205,7 +1216,7 @@ def update_subject(subject_id: int, subject: SubjectUpdate, request: Request):
         if subject.use_book_for_generation is not None:
             update_fields.append(f"use_book_for_generation = {placeholder}")
             values.append(subject.use_book_for_generation)
-        if getattr(subject, "department", None) is not None:
+        if getattr(subject, "department", None) is not None and actor["role"] in ("admin", "hod"):
             update_fields.append(f"department = {placeholder}")
             values.append(subject.department.strip() or None)
         
@@ -1977,7 +1988,7 @@ def _run_generate_all_questions(job_id: str, subject_id: int, requests: List[Que
 @app.delete("/api/subjects/{subject_id}", tags=["Subjects"], status_code=status.HTTP_204_NO_CONTENT)
 def delete_subject(subject_id: int, request: Request):
     """Delete a subject and cascade delete all related data (question banks, questions, papers)"""
-    _require_roles(request, "admin")
+    actor = _require_roles(request, "admin", "hod", "staff")
     connection = get_db_connection()
     if not connection:
         raise HTTPException(status_code=500, detail="Database connection failed")
@@ -1988,7 +1999,7 @@ def delete_subject(subject_id: int, request: Request):
         
         # Get subject details
         cursor.execute(f"""
-            SELECT id, syllabus_file, book_file 
+            SELECT id, syllabus_file, book_file, department, created_by
             FROM subjects 
             WHERE id = {placeholder}
         """, (subject_id,))
@@ -1998,6 +2009,8 @@ def delete_subject(subject_id: int, request: Request):
             cursor.close()
             connection.close()
             raise HTTPException(status_code=404, detail="Subject not found")
+
+        _assert_subject_access(actor, dict(subject), connection=connection)
         
         # Get all question banks for this subject (for logging/info)
         cursor.execute(f"""
@@ -3736,7 +3749,7 @@ def generate_question_paper_from_data(request: dict, http_request: Request):
         paper_data = request.get('paper_data')  # Contains parts and questions
         
         # Validate subject
-        cursor.execute(f"SELECT id, subject_id, name, course_outcome_file FROM subjects WHERE id = {placeholder}", (subject_id,))
+        cursor.execute(f"SELECT id, subject_id, name, course_outcome_file, department, created_by FROM subjects WHERE id = {placeholder}", (subject_id,))
         subject = cursor.fetchone()
         if not subject:
             raise HTTPException(status_code=404, detail="Subject not found")

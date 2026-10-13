@@ -165,6 +165,13 @@ def migrate_database():
         except:
             pass
 
+        # Add created_by to subjects (owner scoping for staff-created subjects)
+        try:
+            cursor.execute("ALTER TABLE subjects ADD COLUMN created_by INT")
+            print("Added column created_by to subjects table.")
+        except:
+            pass
+
         # Add blooms_level, source, image_id to questions
         questions_new_cols = [
             ('blooms_level', 'VARCHAR(100)'),
@@ -310,6 +317,7 @@ def init_database():
                 course_outcome_file VARCHAR(500),
                 use_book_for_generation BOOLEAN DEFAULT FALSE,
                 department VARCHAR(255),
+                created_by INT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 UNIQUE KEY unique_name (name)

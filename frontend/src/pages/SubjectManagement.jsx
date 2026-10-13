@@ -7,10 +7,18 @@ import Modal from '../components/Modal'
 import { useAuth } from '../context/useAuth'
 
 const SubjectManagement = () => {
-  const { isAdmin, isHod, userData } = useAuth()
-  const canCreateSubjects = isAdmin || isHod
-  const canDeleteSubjects = isAdmin
-  const canUploadCourseOutcome = isAdmin || isHod
+  const { isAdmin, isHod, isStaff, userData } = useAuth()
+  const canCreateSubjects = isAdmin || isHod || isStaff
+  const canAssignUsers = isAdmin || isHod
+  const canUploadCourseOutcome = isAdmin || isHod || isStaff
+
+  const canManageSubject = (subject) => {
+    if (isAdmin) return true
+    const dept = (userData?.department || '').trim().toLowerCase()
+    if (isHod && dept && (subject.department || '').trim().toLowerCase() === dept) return true
+    if (isStaff && subject.created_by && subject.created_by === userData?.id) return true
+    return false
+  }
   const [subjects, setSubjects] = useState([])
   const [assignableUsers, setAssignableUsers] = useState([])
   const [loading, setLoading] = useState(true)
@@ -31,10 +39,10 @@ const SubjectManagement = () => {
   // Fetch subjects on component mount
   useEffect(() => {
     fetchSubjects()
-    if (canCreateSubjects) {
+    if (canAssignUsers) {
       fetchAssignableUsers()
     }
-  }, [canCreateSubjects])
+  }, [canAssignUsers])
 
   const fetchAssignableUsers = async () => {
     try {
@@ -84,9 +92,9 @@ const SubjectManagement = () => {
       const formDataToSend = new FormData()
       formDataToSend.append('subject_id', formData.subjectId)
       formDataToSend.append('name', formData.name)
-      formDataToSend.append('department', isHod ? (userData?.department || '') : formData.department || '')
+      formDataToSend.append('department', (isHod || isStaff) ? (userData?.department || '') : formData.department || '')
       formDataToSend.append('use_book_for_generation', formData.useBookForGeneration)
-      formDataToSend.append('assigned_user_ids', JSON.stringify(selectedUserIds))
+      formDataToSend.append('assigned_user_ids', JSON.stringify(canAssignUsers ? selectedUserIds : []))
 
       if (formData.syllabusFile) {
         formDataToSend.append('syllabus_file', formData.syllabusFile)
@@ -276,13 +284,14 @@ const SubjectManagement = () => {
               <input
                 type="text"
                 className="form-input"
-                value={isHod ? (userData?.department || '') : formData.department}
+                value={(isHod || isStaff) ? (userData?.department || '') : formData.department}
                 onChange={(e) => setFormData(prev => ({ ...prev, department: e.target.value }))}
                 placeholder="e.g. AIML, CSE (used for HOD access)"
-                disabled={isHod}
+                disabled={isHod || isStaff}
               />
             </div>
 
+            {canAssignUsers && (
             <div className="form-group" style={{ marginBottom: '1.5rem' }}>
               <label className="form-label">Map Users / Staff</label>
               <div style={{
@@ -354,6 +363,7 @@ const SubjectManagement = () => {
                 HOD-created subjects are automatically available to staff in the same department. Selected users get explicit access too.
               </p>
             </div>
+            )}
 
             <div className="form-row">
               <div className="form-group">
@@ -675,7 +685,7 @@ const SubjectManagement = () => {
                   <Database size={16} />
                   Bank
                 </Link>
-                {canDeleteSubjects && (
+                {canManageSubject(subject) && (
                   <button
                     onClick={() => handleDelete(subject.id)}
                     className="btn btn-danger"

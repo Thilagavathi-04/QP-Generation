@@ -56,6 +56,7 @@ class SubjectResponse(BaseModel):
     course_outcome_file: Optional[str] = None
     use_book_for_generation: bool
     department: Optional[str] = None
+    created_by: Optional[int] = None
     created_at: datetime
     updated_at: datetime
 
